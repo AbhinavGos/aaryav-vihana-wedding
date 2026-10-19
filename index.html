@@ -60,69 +60,10 @@
     z-index: -100;
   }
 
-  /* 1-Tap Frictionless Entry Gate (Mobile Audio & Camera Permission) */
-  #start-prompt {
-    position: fixed; inset: 0; z-index: 35;
-    display: flex; align-items: center; justify-content: center;
-    background: radial-gradient(circle at 50% 50%, rgba(20, 8, 14, 0.86), rgba(8, 3, 6, 0.97));
-    backdrop-filter: blur(14px);
-    cursor: pointer; text-align: center; padding: 24px;
-    transition: opacity 0.3s ease, visibility 0.3s;
-  }
-
-  .start-card {
-    max-width: 340px; width: 100%;
-    background: rgba(22, 10, 16, 0.94);
-    border: 1.5px solid var(--gold-border);
-    border-radius: 28px; padding: 36px 24px 28px;
-    box-shadow: 0 16px 45px rgba(0,0,0,0.85), 0 0 35px var(--crimson-glow);
-    display: flex; flex-direction: column; align-items: center;
-    animation: gentlePulse 2.8s infinite ease-in-out;
-  }
-
-  @keyframes gentlePulse {
-    0%, 100% { transform: scale(1); box-shadow: 0 16px 45px rgba(0,0,0,0.85), 0 0 25px var(--gold-glow); }
-    50% { transform: scale(1.02); box-shadow: 0 20px 55px rgba(0,0,0,0.95), 0 0 45px var(--crimson-glow); }
-  }
-
-  .monogram-ring {
-    width: 80px; height: 80px; border-radius: 50%;
-    background: linear-gradient(135deg, #fce0a2, #dfa248, #a31d32);
-    display: flex; align-items: center; justify-content: center;
-    font-family: 'Cinzel', serif; font-size: 26px; font-weight: 800; color: #1a080d;
-    margin-bottom: 18px;
-    box-shadow: 0 8px 25px rgba(223, 162, 72, 0.5);
-  }
-
-  .start-tagline {
-    font-size: 11.5px; font-weight: 700; letter-spacing: 0.18em;
-    text-transform: uppercase; color: var(--gold); margin-bottom: 6px;
-  }
-
-  .start-card h2 {
-    font-family: 'Cinzel', serif; font-size: 22px; font-weight: 700;
-    margin: 0 0 8px 0; color: #ffffff; letter-spacing: 0.05em;
-  }
-
-  .start-date {
-    font-size: 12px; font-weight: 600; color: #f2c7a5;
-    letter-spacing: 0.12em; text-transform: uppercase; margin-bottom: 22px;
-  }
-
-  .btn-enter-ar {
-    background: linear-gradient(135deg, #fce0a2, #dfa248);
-    color: #1a080d; font-family: 'Cinzel', serif; font-weight: 800;
-    font-size: 13.5px; letter-spacing: 0.1em; text-transform: uppercase;
-    padding: 14px 28px; border-radius: 999px; border: none;
-    cursor: pointer; box-shadow: 0 8px 25px rgba(244, 192, 104, 0.4);
-    transition: transform 0.15s ease, box-shadow 0.15s ease;
-  }
-  .btn-enter-ar:active { transform: scale(0.96); }
-
   /* Camera Engine Loading Screen */
   #loading-view {
     position: fixed; inset: 0; z-index: 30;
-    display: none; flex-direction: column; align-items: center; justify-content: center;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
     background: var(--dark);
   }
 
@@ -234,35 +175,40 @@
   }
   .icon-btn:active { transform: scale(0.92); }
 
+  /* Tap to Unmute Toast */
+  #unmuteToast {
+    position: fixed;
+    bottom: 84px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(22, 10, 16, 0.94);
+    border: 1.5px solid var(--gold-border);
+    color: var(--gold);
+    font-size: 11.5px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 9px 20px;
+    border-radius: 999px;
+    backdrop-filter: blur(12px);
+    box-shadow: 0 6px 20px rgba(0,0,0,0.7), 0 0 20px var(--gold-glow);
+    display: none;
+    z-index: 25;
+    pointer-events: none;
+    animation: gentlePulse 2s infinite ease-in-out;
+  }
+
+  @keyframes gentlePulse {
+    0%, 100% { transform: translateX(-50%) scale(1); }
+    50% { transform: translateX(-50%) scale(1.04); }
+  }
+
   /* Bottom Controls Dock */
   .hud-bottom {
     position: absolute; bottom: env(safe-area-inset-bottom, 18px);
     left: 14px; right: 14px;
     display: flex; flex-direction: column; align-items: center; gap: 10px;
     pointer-events: auto;
-  }
-
-  /* Angle Switcher Modes */
-  .angle-mode-bar {
-    display: flex; gap: 6px;
-    background: rgba(22, 10, 16, 0.92);
-    border: 1px solid var(--gold-border);
-    border-radius: 999px; padding: 4px 6px;
-    backdrop-filter: blur(12px);
-    box-shadow: 0 8px 24px rgba(0,0,0,0.7);
-  }
-
-  .angle-btn {
-    background: transparent; border: none;
-    color: #cbd5e1; font-size: 11px; font-weight: 600;
-    padding: 6px 14px; border-radius: 999px;
-    cursor: pointer; transition: all 0.2s ease;
-    white-space: nowrap; display: flex; align-items: center; gap: 5px;
-  }
-  .angle-btn.active {
-    background: linear-gradient(135deg, #fce0a2, #dfa248);
-    color: #1a080d; font-weight: 700;
-    box-shadow: 0 2px 10px rgba(223, 162, 72, 0.4);
   }
 
   /* Playback & Progress Bar Dock */
@@ -379,21 +325,10 @@
 <body>
 
 <!-- Hidden video element for GPU Texture Streaming -->
-<video id="arVideo" playsinline webkit-playsinline loop crossorigin="anonymous" src="./video.mp4" style="display:none"></video>
+<video id="arVideo" playsinline webkit-playsinline loop muted crossorigin="anonymous" src="./video.mp4" style="display:none"></video>
 
 <!-- Fullscreen WebAR Camera Viewport -->
 <div id="ar-container"></div>
-
-<!-- 1-Tap Frictionless Entry Gate (Mobile Audio & Camera Permission) -->
-<div id="start-prompt">
-  <div class="start-card">
-    <div class="monogram-ring">A &amp; V</div>
-    <div class="start-tagline">#VI-AR-INLOVE</div>
-    <h2>Aaryav &amp; Vihana</h2>
-    <div class="start-date">26th December 2026</div>
-    <button class="btn-enter-ar" id="startBtn">Enter AR Camera</button>
-  </div>
-</div>
 
 <!-- Loading View -->
 <div id="loading-view">
@@ -410,6 +345,9 @@
   <div class="scanner-hint">✨ Point Camera At Invitation Card</div>
 </div>
 
+<!-- Tap to Unmute Toast -->
+<div id="unmuteToast">🔊 Tap Screen to Unmute Sound</div>
+
 <!-- Active AR HUD -->
 <div id="hud">
   <!-- Top Bar -->
@@ -420,7 +358,7 @@
     </div>
     <div class="hud-actions">
       <button class="icon-btn" id="viewTargetBtn" title="View Invitation Target">🎴</button>
-      <button class="icon-btn" id="muteBtn" title="Mute/Unmute Audio">🔊</button>
+      <button class="icon-btn" id="muteBtn" title="Mute/Unmute Audio">🔇</button>
       <button class="icon-btn" id="replayBtn" title="Replay Video">↺</button>
       <button class="icon-btn" id="closeBtn" title="Restart">✕</button>
     </div>
@@ -428,14 +366,6 @@
 
   <!-- Bottom Controls Dock -->
   <div class="hud-bottom">
-    <!-- Perspective / Angle Switcher -->
-    <div class="angle-mode-bar">
-      <button class="angle-btn active" id="modeFlushBtn"><span>🖼️</span> Flush 0°</button>
-      <button class="angle-btn" id="modeEaselBtn"><span>📐</span> Easel 60°</button>
-      <button class="angle-btn" id="modeStandBtn"><span>🎴</span> Stand 90°</button>
-      <button class="angle-btn" id="modeAutoBtn"><span>✨</span> Auto</button>
-    </div>
-
     <!-- Video Playback & Time Scrub Dock -->
     <div class="playback-bar">
       <button class="play-pause-btn" id="playPauseBtn" title="Play/Pause">⏸️</button>
@@ -476,11 +406,10 @@ import * as THREE from 'three';
 import { MindARThree } from 'mindar-image-three';
 
 // DOM Elements
-const startPrompt = document.getElementById('start-prompt');
-const startBtn = document.getElementById('startBtn');
 const loadingView = document.getElementById('loading-view');
 const loadStatus = document.getElementById('loadStatus');
 const scannerOverlay = document.getElementById('scanner-overlay');
+const unmuteToast = document.getElementById('unmuteToast');
 const hud = document.getElementById('hud');
 const hudDot = document.getElementById('hudDot');
 const hudStatusText = document.getElementById('hudStatusText');
@@ -500,11 +429,6 @@ const errorBox = document.getElementById('error-box');
 const errorDesc = document.getElementById('errorDesc');
 const retryBtn = document.getElementById('retryBtn');
 
-const modeFlushBtn = document.getElementById('modeFlushBtn');
-const modeEaselBtn = document.getElementById('modeEaselBtn');
-const modeStandBtn = document.getElementById('modeStandBtn');
-const modeAutoBtn = document.getElementById('modeAutoBtn');
-
 // 3D Scene Architecture
 let mindarThree = null;
 let anchor = null;
@@ -519,7 +443,7 @@ let particlesGroup = null;
 let isTargetFound = false;
 let hasEverLocked = false;
 let userManuallyPaused = false;
-let currentAngleMode = 'flush'; // 'flush' | 'easel' | 'stand' | 'auto'
+let hasUnmutedOnce = false;
 
 // Filtering & Smooth Tracking Matrices
 const currentPos = new THREE.Vector3();
@@ -583,31 +507,14 @@ function createAtmosphericParticles() {
   return group;
 }
 
-// ── Start WebAR Pipeline ─────────────────────────────────────────────────────
+// ── Start WebAR Pipeline (Direct Launch, No Landing Gate) ───────────────────
 async function startAR() {
-  startPrompt.style.display = 'none';
   loadingView.style.display = 'flex';
   loadStatus.textContent = 'Starting Camera & Target Engine...';
 
-  // 1-Tap Autoplay & Audio Priming
-  try {
-    arVideo.muted = false;
-    const playPromise = arVideo.play();
-    if (playPromise !== undefined) {
-      await playPromise;
-      arVideo.pause();
-      arVideo.currentTime = 0;
-    }
-  } catch (err) {
-    console.warn('Audio prime notice, muted fallback:', err);
-    arVideo.muted = true;
-    try {
-      await arVideo.play();
-      arVideo.pause();
-      arVideo.currentTime = 0;
-      arVideo.muted = false;
-    } catch (e2) {}
-  }
+  // Ensure video element is primed for clean mobile autoplay
+  arVideo.muted = true;
+  arVideo.playsInline = true;
 
   arContainer.style.display = 'block';
 
@@ -652,7 +559,7 @@ async function startAR() {
     });
     shadowMesh = new THREE.Mesh(shadowGeo, shadowMat);
     shadowMesh.position.set(0, -HALF_HEIGHT, 0.002);
-    shadowMesh.visible = false;
+    shadowMesh.visible = true;
     arStage.add(shadowMesh);
 
     // ── 2. 3D Golden Pedestal Bar along Bottom Hinge ──
@@ -664,12 +571,12 @@ async function startAR() {
     });
     standPedestal = new THREE.Mesh(standGeo, standMat);
     standPedestal.position.set(0, -HALF_HEIGHT, 0.008);
-    standPedestal.visible = false;
+    standPedestal.visible = true;
     arStage.add(standPedestal);
 
-    // ── 3. Pivot Transform Group ──
+    // ── 3. Pivot Transform Group (Permanent Auto Mode) ──
     cardPivotGroup = new THREE.Group();
-    cardPivotGroup.position.set(0, 0, 0.002);
+    cardPivotGroup.position.set(0, -HALF_HEIGHT, 0.008);
     arStage.add(cardPivotGroup);
 
     // ── 4. High-Definition Unlit Video Texture ──
@@ -679,32 +586,29 @@ async function startAR() {
     videoTexture.magFilter = THREE.LinearFilter;
     videoTexture.generateMipmaps = false;
 
-    // Centered geometry for flush card overlay
+    // Upright geometry extending upwards from bottom hinge (Auto Mode)
     const videoGeo = new THREE.PlaneGeometry(CARD_WIDTH, CARD_HEIGHT);
     const videoMat = new THREE.MeshBasicMaterial({
       map: videoTexture,
       side: THREE.DoubleSide
     });
     videoMesh = new THREE.Mesh(videoGeo, videoMat);
-    videoMesh.position.set(0, 0, 0);
+    videoMesh.position.set(0, HALF_HEIGHT, 0);
     cardPivotGroup.add(videoMesh);
 
-    // Recessed Gilded Backing Plane (z = -0.003) to prevent GPU Z-fighting
+    // Recessed Gilded Backing Plane (z = -0.004) to prevent GPU Z-fighting
     const backGeo = new THREE.PlaneGeometry(CARD_WIDTH + 0.02, CARD_HEIGHT + 0.02);
     const backMat = new THREE.MeshBasicMaterial({
       color: 0xc89b38,
       side: THREE.DoubleSide
     });
     backMesh = new THREE.Mesh(backGeo, backMat);
-    backMesh.position.set(0, 0, -0.003);
+    backMesh.position.set(0, HALF_HEIGHT, -0.004);
     cardPivotGroup.add(backMesh);
 
     // ── 5. Romantic Floating Golden Sparkles ──
     particlesGroup = createAtmosphericParticles();
     arStage.add(particlesGroup);
-
-    // Apply Default Mode: 'flush' (Live Photo directly on card)
-    applyAngleMode('flush');
 
     // ── 6. Target Found & Lost Callbacks ─────────────────
     anchor.onTargetFound = () => {
@@ -716,12 +620,17 @@ async function startAR() {
 
       if (arVideo.paused && !userManuallyPaused) {
         arVideo.play().catch(e => {
-          console.warn('Video play error on lock, trying muted:', e);
+          console.warn('Video play error on lock, forcing muted:', e);
           arVideo.muted = true;
           arVideo.play().catch(() => {});
         });
       }
       playPauseBtn.textContent = '⏸️';
+
+      // Show unmute hint if still muted
+      if (arVideo.muted && !hasUnmutedOnce) {
+        unmuteToast.style.display = 'block';
+      }
 
       if (navigator.vibrate) {
         try { navigator.vibrate(60); } catch(e) {}
@@ -799,7 +708,7 @@ async function startAR() {
       }
 
       // 2. Dynamic Auto Camera-Facing Billboard
-      if (currentAngleMode === 'auto' && arStage && arStage.visible && cardPivotGroup) {
+      if (arStage && arStage.visible && cardPivotGroup) {
         arStage.getWorldQuaternion(parentQuat);
         targetLocalQuat.copy(parentQuat).invert();
         cardPivotGroup.quaternion.slerp(targetLocalQuat, 0.16);
@@ -831,54 +740,20 @@ async function startAR() {
   }
 }
 
-// ── Angle Mode Switcher ──────────────────────────────────────────────────────
-function applyAngleMode(mode) {
-  currentAngleMode = mode;
-  if (!cardPivotGroup || !videoMesh || !backMesh) return;
-
-  [modeFlushBtn, modeEaselBtn, modeStandBtn, modeAutoBtn].forEach(b => b?.classList.remove('active'));
-
-  if (mode === 'flush') {
-    modeFlushBtn.classList.add('active');
-    // Perfectly centered flat on physical invitation card
-    cardPivotGroup.quaternion.identity();
-    cardPivotGroup.rotation.set(0, 0, 0);
-    cardPivotGroup.position.set(0, 0, 0.002);
-    videoMesh.position.set(0, 0, 0);
-    backMesh.position.set(0, 0, -0.003);
-    if (shadowMesh) shadowMesh.visible = false;
-    if (standPedestal) standPedestal.visible = false;
-  } else if (mode === 'easel') {
-    modeEaselBtn.classList.add('active');
-    // 60° pop-up easel tilt from bottom hinge
-    cardPivotGroup.quaternion.identity();
-    cardPivotGroup.rotation.set(Math.PI / 3, 0, 0);
-    cardPivotGroup.position.set(0, -HALF_HEIGHT, 0.008);
-    videoMesh.position.set(0, HALF_HEIGHT, 0);
-    backMesh.position.set(0, HALF_HEIGHT, -0.004);
-    if (shadowMesh) shadowMesh.visible = true;
-    if (standPedestal) standPedestal.visible = true;
-  } else if (mode === 'stand') {
-    modeStandBtn.classList.add('active');
-    // 90° upright vertical stance from bottom hinge
-    cardPivotGroup.quaternion.identity();
-    cardPivotGroup.rotation.set(Math.PI / 2, 0, 0);
-    cardPivotGroup.position.set(0, -HALF_HEIGHT, 0.008);
-    videoMesh.position.set(0, HALF_HEIGHT, 0);
-    backMesh.position.set(0, HALF_HEIGHT, -0.004);
-    if (shadowMesh) shadowMesh.visible = true;
-    if (standPedestal) standPedestal.visible = true;
-  } else if (mode === 'auto') {
-    modeAutoBtn.classList.add('active');
-    // Billboard camera-facing mode
-    cardPivotGroup.quaternion.identity();
-    cardPivotGroup.position.set(0, -HALF_HEIGHT, 0.008);
-    videoMesh.position.set(0, HALF_HEIGHT, 0);
-    backMesh.position.set(0, HALF_HEIGHT, -0.004);
-    if (shadowMesh) shadowMesh.visible = true;
-    if (standPedestal) standPedestal.visible = true;
+// ── Seamless Audio Unlock Gesture ───────────────────────────────────────────
+function unlockAudio() {
+  if (arVideo.muted) {
+    arVideo.muted = false;
+    hasUnmutedOnce = true;
+    muteBtn.textContent = '🔊';
+    unmuteToast.style.display = 'none';
+    if (arVideo.paused && isTargetFound && !userManuallyPaused) {
+      arVideo.play().catch(() => {});
+    }
   }
 }
+window.addEventListener('click', unlockAudio);
+window.addEventListener('touchstart', unlockAudio, { passive: true });
 
 // ── Progress & Time Formatter ────────────────────────────────────────────────
 function formatTime(seconds) {
@@ -911,15 +786,10 @@ if (progressTrack) {
 }
 
 // ── Event Handlers ───────────────────────────────────────────────────────────
-startBtn.onclick = startAR;
 retryBtn.onclick = () => { errorBox.style.display = 'none'; startAR(); };
 
-modeFlushBtn.onclick = () => applyAngleMode('flush');
-modeEaselBtn.onclick = () => applyAngleMode('easel');
-modeStandBtn.onclick = () => applyAngleMode('stand');
-modeAutoBtn.onclick = () => applyAngleMode('auto');
-
-playPauseBtn.onclick = () => {
+playPauseBtn.onclick = (e) => {
+  e.stopPropagation();
   if (arVideo.paused) {
     userManuallyPaused = false;
     arVideo.play().catch(() => {});
@@ -931,19 +801,26 @@ playPauseBtn.onclick = () => {
   }
 };
 
-muteBtn.onclick = () => {
+muteBtn.onclick = (e) => {
+  e.stopPropagation();
   arVideo.muted = !arVideo.muted;
+  if (!arVideo.muted) {
+    hasUnmutedOnce = true;
+    unmuteToast.style.display = 'none';
+  }
   muteBtn.textContent = arVideo.muted ? '🔇' : '🔊';
 };
 
-replayBtn.onclick = () => {
+replayBtn.onclick = (e) => {
+  e.stopPropagation();
   arVideo.currentTime = 0;
   userManuallyPaused = false;
   arVideo.play().catch(() => {});
   playPauseBtn.textContent = '⏸️';
 };
 
-closeBtn.onclick = () => {
+closeBtn.onclick = (e) => {
+  e.stopPropagation();
   if (mindarThree) {
     try { mindarThree.stop(); } catch(e) {}
   }
@@ -951,8 +828,15 @@ closeBtn.onclick = () => {
   window.location.reload();
 };
 
-viewTargetBtn.onclick = () => { targetModal.style.display = 'flex'; };
-closeTargetModalBtn.onclick = () => { targetModal.style.display = 'none'; };
+viewTargetBtn.onclick = (e) => { e.stopPropagation(); targetModal.style.display = 'flex'; };
+closeTargetModalBtn.onclick = (e) => { e.stopPropagation(); targetModal.style.display = 'none'; };
+
+// Direct Launch on Page Ready
+if (document.readyState === 'complete' || document.readyState === 'interactive') {
+  startAR();
+} else {
+  window.addEventListener('DOMContentLoaded', startAR);
+}
 </script>
 </body>
 </html>
