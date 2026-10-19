@@ -158,6 +158,7 @@
   .badge-dot {
     width: 8px; height: 8px; border-radius: 50%;
     background: #00ff88; box-shadow: 0 0 10px #00ff88;
+    transition: background 0.3s, box-shadow 0.3s;
   }
   .badge-dot.lost {
     background: #ffb700; box-shadow: 0 0 10px #ffb700;
@@ -435,15 +436,25 @@ let anchor = null;
 let arStage = null;
 let cardPivotGroup = null;
 let videoMesh = null;
+let videoMat = null;
 let backMesh = null;
-let standPedestal = null;
-let shadowMesh = null;
+let backMat = null;
 let particlesGroup = null;
+let matGold = null;
+let matRose = null;
+let matIvory = null;
 
+// Dual-Speed Watchdog & Tracking Architecture
 let isTargetFound = false;
-let hasEverLocked = false;
+let lastTrackedTime = 0;
 let userManuallyPaused = false;
 let hasUnmutedOnce = false;
+
+const FAST_EXIT_TIMEOUT = 250;     // 250ms when camera points away from card
+const INERTIAL_TILT_TIMEOUT = 1200; // 1200ms when card is in frustum but optical tracking drops intermittently
+
+const _cardCenterWorld = new THREE.Vector3();
+const _screenPos = new THREE.Vector3();
 
 // Filtering & Smooth Tracking Matrices
 const currentPos = new THREE.Vector3();
@@ -463,28 +474,14 @@ const HALF_HEIGHT = CARD_HEIGHT / 2; // 0.8888889
 const parentQuat = new THREE.Quaternion();
 const targetLocalQuat = new THREE.Quaternion();
 
-// ── Soft Ground Contact Shadow Texture ──────────────────────────────────────
-function createContactShadowTexture() {
-  const canvas = document.createElement('canvas');
-  canvas.width = 256; canvas.height = 128;
-  const ctx = canvas.getContext('2d');
-  const gradient = ctx.createRadialGradient(128, 64, 10, 128, 64, 110);
-  gradient.addColorStop(0, 'rgba(0,0,0,0.75)');
-  gradient.addColorStop(0.4, 'rgba(0,0,0,0.35)');
-  gradient.addColorStop(1, 'rgba(0,0,0,0)');
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, 256, 128);
-  return new THREE.CanvasTexture(canvas);
-}
-
 // ── Romantic Floating Golden Stars & Sparkles Particles ─────────────────────
 function createAtmosphericParticles() {
   const group = new THREE.Group();
   const count = 38;
   const geo = new THREE.PlaneGeometry(0.026, 0.026);
-  const matGold = new THREE.MeshBasicMaterial({ color: 0xf4c068, side: THREE.DoubleSide, transparent: true, opacity: 0.85 });
-  const matRose = new THREE.MeshBasicMaterial({ color: 0xe24a5e, side: THREE.DoubleSide, transparent: true, opacity: 0.75 });
-  const matIvory = new THREE.MeshBasicMaterial({ color: 0xfff8e7, side: THREE.DoubleSide, transparent: true, opacity: 0.8 });
+  matGold = new THREE.MeshBasicMaterial({ color: 0xf4c068, side: THREE.DoubleSide, transparent: true, opacity: 0 });
+  matRose = new THREE.MeshBasicMaterial({ color: 0xe24a5e, side: THREE.DoubleSide, transparent: true, opacity: 0 });
+  matIvory = new THREE.MeshBasicMaterial({ color: 0xfff8e7, side: THREE.DoubleSide, transparent: true, opacity: 0 });
 
   for (let i = 0; i < count; i++) {
     const rnd = Math.random();
@@ -519,13 +516,14 @@ async function startAR() {
   arContainer.style.display = 'block';
 
   try {
+    // Calibrated MindAR Engine: missTolerance = 8 frames (~200ms) prevents hallucinated targets
     mindarThree = new MindARThree({
       container: arContainer,
       imageTargetSrc: './targets.mind',
       filterMinCF: 0.0005,
       filterBeta: 0.05,
       warmupTolerance: 2,
-      missTolerance: 45,
+      missTolerance: 8,
       uiLoading: "no",
       uiScanning: "no"
     });
@@ -549,37 +547,12 @@ async function startAR() {
     arStage.visible = false;
     scene.add(arStage);
 
-    // ── 1. Contact Ground Shadow on Card Plane ──
-    const shadowGeo = new THREE.PlaneGeometry(CARD_WIDTH * 1.35, 0.45);
-    const shadowMat = new THREE.MeshBasicMaterial({
-      map: createContactShadowTexture(),
-      transparent: true,
-      opacity: 0.6,
-      depthWrite: false
-    });
-    shadowMesh = new THREE.Mesh(shadowGeo, shadowMat);
-    shadowMesh.position.set(0, -HALF_HEIGHT, 0.002);
-    shadowMesh.visible = true;
-    arStage.add(shadowMesh);
-
-    // ── 2. 3D Golden Pedestal Bar along Bottom Hinge ──
-    const standGeo = new THREE.BoxGeometry(CARD_WIDTH + 0.04, 0.024, 0.018);
-    const standMat = new THREE.MeshStandardMaterial({
-      color: 0xd4af37,
-      metalness: 0.88,
-      roughness: 0.22
-    });
-    standPedestal = new THREE.Mesh(standGeo, standMat);
-    standPedestal.position.set(0, -HALF_HEIGHT, 0.008);
-    standPedestal.visible = true;
-    arStage.add(standPedestal);
-
-    // ── 3. Pivot Transform Group (Permanent Auto Mode) ──
+    // ── Pivot Transform Group (Rigid Base-Grounded along Bottom Hinge) ──
     cardPivotGroup = new THREE.Group();
-    cardPivotGroup.position.set(0, -HALF_HEIGHT, 0.008);
+    cardPivotGroup.position.set(0, -HALF_HEIGHT, 0.004);
     arStage.add(cardPivotGroup);
 
-    // ── 4. High-Definition Unlit Video Texture ──
+    // ── High-Definition Unlit Video Texture with Smooth Opacity Fade ──
     const videoTexture = new THREE.VideoTexture(arVideo);
     videoTexture.colorSpace = THREE.SRGBColorSpace;
     videoTexture.minFilter = THREE.LinearFilter;
@@ -588,33 +561,36 @@ async function startAR() {
 
     // Upright geometry extending upwards from bottom hinge (Auto Mode)
     const videoGeo = new THREE.PlaneGeometry(CARD_WIDTH, CARD_HEIGHT);
-    const videoMat = new THREE.MeshBasicMaterial({
+    videoMat = new THREE.MeshBasicMaterial({
       map: videoTexture,
-      side: THREE.DoubleSide
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0
     });
     videoMesh = new THREE.Mesh(videoGeo, videoMat);
     videoMesh.position.set(0, HALF_HEIGHT, 0);
     cardPivotGroup.add(videoMesh);
 
-    // Recessed Gilded Backing Plane (z = -0.004) to prevent GPU Z-fighting
-    const backGeo = new THREE.PlaneGeometry(CARD_WIDTH + 0.02, CARD_HEIGHT + 0.02);
-    const backMat = new THREE.MeshBasicMaterial({
+    // Recessed Gilded Backing Plane (z = -0.003) to prevent GPU Z-fighting
+    const backGeo = new THREE.PlaneGeometry(CARD_WIDTH + 0.016, CARD_HEIGHT + 0.016);
+    backMat = new THREE.MeshBasicMaterial({
       color: 0xc89b38,
-      side: THREE.DoubleSide
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0
     });
     backMesh = new THREE.Mesh(backGeo, backMat);
-    backMesh.position.set(0, HALF_HEIGHT, -0.004);
+    backMesh.position.set(0, HALF_HEIGHT, -0.003);
     cardPivotGroup.add(backMesh);
 
-    // ── 5. Romantic Floating Golden Sparkles ──
+    // ── Romantic Floating Golden Sparkles (Seamless, No Chunky Props) ──
     particlesGroup = createAtmosphericParticles();
     arStage.add(particlesGroup);
 
-    // ── 6. Target Found & Lost Callbacks ─────────────────
+    // ── Target Found & Lost Callbacks ─────────────────
     anchor.onTargetFound = () => {
       isTargetFound = true;
-      hasEverLocked = true;
-      scannerOverlay.style.display = 'none';
+      lastTrackedTime = performance.now();
       hudDot.className = 'badge-dot';
       hudStatusText.textContent = 'Card Locked • Playing';
 
@@ -633,30 +609,13 @@ async function startAR() {
       }
 
       if (navigator.vibrate) {
-        try { navigator.vibrate(60); } catch(e) {}
+        try { navigator.vibrate(50); } catch(e) {}
       }
     };
 
     anchor.onTargetLost = () => {
       isTargetFound = false;
-
-      // Persistence hold: Keep playing smoothly during slight camera movements
-      if (hasEverLocked) {
-        scannerOverlay.style.display = 'none';
-        hudDot.className = 'badge-dot';
-        hudStatusText.textContent = 'Card Anchored • Playing';
-        if (arVideo.paused && !userManuallyPaused) {
-          arVideo.play().catch(() => {});
-          playPauseBtn.textContent = '⏸️';
-        }
-        return;
-      }
-
-      scannerOverlay.style.display = 'flex';
-      hudDot.className = 'badge-dot lost';
-      hudStatusText.textContent = 'Scanning for Card...';
-      arVideo.pause();
-      playPauseBtn.textContent = '▶️';
+      // Controlled via dual-speed watchdog in render loop
     };
 
     // Start MindAR Engine
@@ -673,14 +632,18 @@ async function startAR() {
     scannerOverlay.style.display = 'flex';
     hud.style.display = 'block';
 
-    // ── 7. Render Loop ────────────────────────────────────────────────────────
+    // ── 7. Render Loop with Frustum Boundary Guard & 1.2s Inertial Buffer ──
     renderer.setAnimationLoop(() => {
+      const now = performance.now();
+
       // 1. Maintain Stable 3D Anchor Transform with Smooth Filtering
+      let isOpticalTracking = false;
       if (anchor && anchor.group && arStage) {
         const m = anchor.group.matrix.elements;
-        const isTracking = (m[0] !== 0 || m[5] !== 0 || m[10] !== 0);
+        isOpticalTracking = isTargetFound && (m[0] !== 0 || m[5] !== 0 || m[10] !== 0);
 
-        if (isTracking) {
+        if (isOpticalTracking) {
+          lastTrackedTime = now;
           anchor.group.matrix.decompose(targetPos, targetQuat, targetScale);
 
           if (!isPoseInitialized) {
@@ -698,35 +661,91 @@ async function startAR() {
           arStage.matrixWorld.copy(arStage.matrix);
           arStage.matrixWorldNeedsUpdate = true;
           lastValidMatrix.copy(arStage.matrix);
-          arStage.visible = true;
-        } else if (hasEverLocked) {
-          arStage.matrix.copy(lastValidMatrix);
-          arStage.matrixWorld.copy(arStage.matrix);
-          arStage.matrixWorldNeedsUpdate = true;
-          arStage.visible = true;
         }
       }
 
-      // 2. Dynamic Auto Camera-Facing Billboard
-      if (arStage && arStage.visible && cardPivotGroup) {
+      // 2. Screen Frustum Boundary Guard
+      // Project the 3D card anchor onto 2D normalized device coordinates (NDC [-1, 1])
+      _cardCenterWorld.setFromMatrixPosition(arStage.matrix);
+      _screenPos.copy(_cardCenterWorld).project(camera);
+
+      const isInsideScreenFrustum = (
+        _screenPos.z < 1.0 && // in front of camera
+        Math.abs(_screenPos.x) <= 1.25 &&
+        Math.abs(_screenPos.y) <= 1.25
+      );
+
+      // Dual-Speed Decision:
+      // If phone pans away (card leaves camera view) -> 250ms Fast Exit!
+      // If camera is still facing the card (steep angle tilt or finger covering) -> 1200ms Inertial Grace Buffer!
+      const allowedGrace = isInsideScreenFrustum ? INERTIAL_TILT_TIMEOUT : FAST_EXIT_TIMEOUT;
+      const elapsedSinceTracked = now - lastTrackedTime;
+      const shouldShow = (lastTrackedTime > 0) && (elapsedSinceTracked < allowedGrace);
+
+      if (shouldShow) {
+        // Inertial Hold: Keep orientation and matrix steady during momentary frame drops
+        if (!isOpticalTracking) {
+          arStage.matrix.copy(lastValidMatrix);
+          arStage.matrixWorld.copy(arStage.matrix);
+          arStage.matrixWorldNeedsUpdate = true;
+        }
+        arStage.visible = true;
+
+        // Smooth Opacity Fade-In
+        videoMat.opacity = THREE.MathUtils.lerp(videoMat.opacity, 1.0, 0.2);
+        backMat.opacity = THREE.MathUtils.lerp(backMat.opacity, 1.0, 0.2);
+
+        // Dynamic Auto Camera-Facing Billboard
         arStage.getWorldQuaternion(parentQuat);
         targetLocalQuat.copy(parentQuat).invert();
         cardPivotGroup.quaternion.slerp(targetLocalQuat, 0.16);
-      }
 
-      // 3. Animate particles
-      if (particlesGroup && (isTargetFound || hasEverLocked)) {
-        particlesGroup.children.forEach(p => {
-          p.position.y -= p.userData.speedY;
-          p.position.x += p.userData.driftX;
-          p.rotation.x += p.userData.rotX;
-          p.rotation.y += p.userData.rotY;
+        if (arVideo.paused && !userManuallyPaused) {
+          arVideo.play().catch(() => {});
+          playPauseBtn.textContent = '⏸️';
+        }
 
-          if (p.position.y < -1.1) {
-            p.position.y = 1.1;
-            p.position.x = (Math.random() - 0.5) * 1.6;
+        hudDot.className = 'badge-dot';
+        hudStatusText.textContent = isOpticalTracking ? 'Card Locked • Playing' : 'Card Anchored • Playing';
+        scannerOverlay.style.display = 'none';
+
+        // Animate particles
+        if (particlesGroup) {
+          if (matGold) matGold.opacity = 0.85 * videoMat.opacity;
+          if (matRose) matRose.opacity = 0.75 * videoMat.opacity;
+          if (matIvory) matIvory.opacity = 0.8 * videoMat.opacity;
+
+          particlesGroup.children.forEach(p => {
+            p.position.y -= p.userData.speedY;
+            p.position.x += p.userData.driftX;
+            p.rotation.x += p.userData.rotX;
+            p.rotation.y += p.userData.rotY;
+
+            if (p.position.y < -1.1) {
+              p.position.y = 1.1;
+              p.position.x = (Math.random() - 0.5) * 1.6;
+            }
+          });
+        }
+      } else {
+        // Smooth Opacity Fade-Out
+        videoMat.opacity = THREE.MathUtils.lerp(videoMat.opacity, 0.0, 0.25);
+        backMat.opacity = THREE.MathUtils.lerp(backMat.opacity, 0.0, 0.25);
+
+        if (matGold) matGold.opacity = 0;
+        if (matRose) matRose.opacity = 0;
+        if (matIvory) matIvory.opacity = 0;
+
+        if (videoMat.opacity < 0.04) {
+          arStage.visible = false;
+          if (!arVideo.paused) {
+            arVideo.pause();
+            playPauseBtn.textContent = '▶️';
           }
-        });
+          hudDot.className = 'badge-dot lost';
+          hudStatusText.textContent = 'Scanning for Card...';
+          scannerOverlay.style.display = 'flex';
+        }
       }
 
       renderer.render(scene, camera);
