@@ -32,7 +32,6 @@
     --gold-glow: rgba(244, 192, 104, 0.45);
     --gold-border: rgba(244, 192, 104, 0.5);
     --crimson: #a31d32;
-    --crimson-glow: rgba(163, 29, 50, 0.45);
     --dark: #0a0508;
     --card-ratio: 1.7777778; /* 1280 / 720 */
   }
@@ -176,34 +175,6 @@
   }
   .icon-btn:active { transform: scale(0.92); }
 
-  /* Tap to Unmute Toast */
-  #unmuteToast {
-    position: fixed;
-    bottom: 84px;
-    left: 50%;
-    transform: translateX(-50%);
-    background: rgba(22, 10, 16, 0.94);
-    border: 1.5px solid var(--gold-border);
-    color: var(--gold);
-    font-size: 11.5px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    padding: 9px 20px;
-    border-radius: 999px;
-    backdrop-filter: blur(12px);
-    box-shadow: 0 6px 20px rgba(0,0,0,0.7), 0 0 20px var(--gold-glow);
-    display: none;
-    z-index: 25;
-    pointer-events: none;
-    animation: gentlePulse 2s infinite ease-in-out;
-  }
-
-  @keyframes gentlePulse {
-    0%, 100% { transform: translateX(-50%) scale(1); }
-    50% { transform: translateX(-50%) scale(1.04); }
-  }
-
   /* Bottom Controls Dock */
   .hud-bottom {
     position: absolute; bottom: env(safe-area-inset-bottom, 18px);
@@ -325,8 +296,8 @@
 </head>
 <body>
 
-<!-- Hidden video element for GPU Texture Streaming -->
-<video id="arVideo" playsinline webkit-playsinline loop muted crossorigin="anonymous" src="./video.mp4" style="display:none"></video>
+<!-- Hidden video element for GPU Texture Streaming (Unmuted by default) -->
+<video id="arVideo" playsinline webkit-playsinline loop crossorigin="anonymous" src="./video.mp4" style="display:none"></video>
 
 <!-- Fullscreen WebAR Camera Viewport -->
 <div id="ar-container"></div>
@@ -346,9 +317,6 @@
   <div class="scanner-hint">✨ Point Camera At Invitation Card</div>
 </div>
 
-<!-- Tap to Unmute Toast -->
-<div id="unmuteToast">🔊 Tap Screen to Unmute Sound</div>
-
 <!-- Active AR HUD -->
 <div id="hud">
   <!-- Top Bar -->
@@ -359,7 +327,7 @@
     </div>
     <div class="hud-actions">
       <button class="icon-btn" id="viewTargetBtn" title="View Invitation Target">🎴</button>
-      <button class="icon-btn" id="muteBtn" title="Mute/Unmute Audio">🔇</button>
+      <button class="icon-btn" id="muteBtn" title="Mute/Unmute Audio">🔊</button>
       <button class="icon-btn" id="replayBtn" title="Replay Video">↺</button>
       <button class="icon-btn" id="closeBtn" title="Restart">✕</button>
     </div>
@@ -410,7 +378,6 @@ import { MindARThree } from 'mindar-image-three';
 const loadingView = document.getElementById('loading-view');
 const loadStatus = document.getElementById('loadStatus');
 const scannerOverlay = document.getElementById('scanner-overlay');
-const unmuteToast = document.getElementById('unmuteToast');
 const hud = document.getElementById('hud');
 const hudDot = document.getElementById('hudDot');
 const hudStatusText = document.getElementById('hudStatusText');
@@ -439,22 +406,21 @@ let videoMesh = null;
 let videoMat = null;
 let backMesh = null;
 let backMat = null;
+let hingeLineMesh = null;
+let contactShadowMesh = null;
 let particlesGroup = null;
 let matGold = null;
 let matRose = null;
 let matIvory = null;
 
-// Dual-Speed Watchdog & Tracking Architecture
+// Tracking State & Watchdog Vectors
 let isTargetFound = false;
+let hasEverLocked = false;
 let lastTrackedTime = 0;
 let userManuallyPaused = false;
-let hasUnmutedOnce = false;
 
-const FAST_EXIT_TIMEOUT = 250;     // 250ms when camera points away from card
-const INERTIAL_TILT_TIMEOUT = 1200; // 1200ms when card is in frustum but optical tracking drops intermittently
-
-const _cardCenterWorld = new THREE.Vector3();
-const _screenPos = new THREE.Vector3();
+// Calibrated 1200ms Inertial Hold for Phone Tilting & Angle Deviations
+const HOLD_GRACE_PERIOD_MS = 1200;
 
 // Filtering & Smooth Tracking Matrices
 const currentPos = new THREE.Vector3();
@@ -466,15 +432,30 @@ const targetScale = new THREE.Vector3(1, 1, 1);
 const lastValidMatrix = new THREE.Matrix4();
 let isPoseInitialized = false;
 
-// Card Geometry: 720 x 1280 (H/W ratio = 1280 / 720 = 1.7777778)
+// Card Geometry: 720 x 1280 (Ratio = 1280 / 720 = 1.7777778)
 const CARD_WIDTH = 1.0;
 const CARD_HEIGHT = 1280 / 720; // 1.7777778
 const HALF_HEIGHT = CARD_HEIGHT / 2; // 0.8888889
 
-const parentQuat = new THREE.Quaternion();
-const targetLocalQuat = new THREE.Quaternion();
+// Adaptive Pitch Vector Helpers
+const _worldCamPos = new THREE.Vector3();
+const _localCamPos = new THREE.Vector3();
 
-// ── Romantic Floating Golden Stars & Sparkles Particles ─────────────────────
+// ── Contact Shadow Texture along Hinge ───────────────────────────────────────
+function createContactShadowTexture() {
+  const canvas = document.createElement('canvas');
+  canvas.width = 256; canvas.height = 64;
+  const ctx = canvas.getContext('2d');
+  const grad = ctx.createLinearGradient(0, 0, 0, 64);
+  grad.addColorStop(0, 'rgba(0, 0, 0, 0.65)');
+  grad.addColorStop(0.35, 'rgba(0, 0, 0, 0.35)');
+  grad.addColorStop(1, 'rgba(0, 0, 0, 0.0)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 256, 64);
+  return new THREE.CanvasTexture(canvas);
+}
+
+// ── Romantic Floating Golden Sparkles ───────────────────────────────────────
 function createAtmosphericParticles() {
   const group = new THREE.Group();
   const count = 38;
@@ -504,26 +485,62 @@ function createAtmosphericParticles() {
   return group;
 }
 
+// ── Audio Playback Engine (Unmuted by Default) ──────────────────────────────
+function tryPlayAudioUnmuted() {
+  if (userManuallyPaused) return;
+
+  // Attempt unmuted play first
+  arVideo.muted = false;
+  arVideo.volume = 1.0;
+  muteBtn.textContent = '🔊';
+
+  const playPromise = arVideo.play();
+  if (playPromise !== undefined) {
+    playPromise.catch(err => {
+      console.warn('Autoplay with sound strictly blocked by browser policy, falling back to muted until 1st touch:', err);
+      arVideo.muted = true;
+      muteBtn.textContent = '🔇';
+      arVideo.play().catch(() => {});
+    });
+  }
+}
+
+// Global 1-Touch Silent Unlock (Guarantees unmuted audio across iOS Safari & Android)
+function unlockAudioOnFirstInteraction() {
+  if (arVideo.muted) {
+    arVideo.muted = false;
+    arVideo.volume = 1.0;
+    muteBtn.textContent = '🔊';
+    if (isTargetFound && arVideo.paused && !userManuallyPaused) {
+      arVideo.play().catch(() => {});
+    }
+  }
+}
+window.addEventListener('pointerdown', unlockAudioOnFirstInteraction, { passive: true });
+window.addEventListener('touchstart', unlockAudioOnFirstInteraction, { passive: true });
+window.addEventListener('click', unlockAudioOnFirstInteraction);
+
 // ── Start WebAR Pipeline (Direct Launch, No Landing Gate) ───────────────────
 async function startAR() {
   loadingView.style.display = 'flex';
   loadStatus.textContent = 'Starting Camera & Target Engine...';
 
-  // Ensure video element is primed for clean mobile autoplay
-  arVideo.muted = true;
+  // Priming unmuted video playback
+  arVideo.muted = false;
+  arVideo.volume = 1.0;
   arVideo.playsInline = true;
 
   arContainer.style.display = 'block';
 
   try {
-    // Calibrated MindAR Engine: missTolerance = 8 frames (~200ms) prevents hallucinated targets
+    // Calibrated MindAR: missTolerance 14 frames (~450ms) + filterBeta 15.0 for rock-solid stability
     mindarThree = new MindARThree({
       container: arContainer,
       imageTargetSrc: './targets.mind',
-      filterMinCF: 0.0005,
-      filterBeta: 0.05,
-      warmupTolerance: 2,
-      missTolerance: 8,
+      filterMinCF: 0.0001,
+      filterBeta: 15.0,
+      warmupTolerance: 1,
+      missTolerance: 14,
       uiLoading: "no",
       uiScanning: "no"
     });
@@ -541,15 +558,38 @@ async function startAR() {
     // Anchor on Card Image Target (Index 0)
     anchor = mindarThree.addAnchor(0);
 
-    // ── Persistent AR Stage Attached to Scene for Smooth Tracking ──
+    // ── Persistent AR Stage Attached to Scene ──
     arStage = new THREE.Group();
     arStage.matrixAutoUpdate = false;
     arStage.visible = false;
     scene.add(arStage);
 
-    // ── Pivot Transform Group (Rigid Base-Grounded along Bottom Hinge) ──
+    // ── Top-Edge Contact Shadow Plane (Lies flat on physical card below hinge) ──
+    const shadowTex = createContactShadowTexture();
+    const shadowGeo = new THREE.PlaneGeometry(CARD_WIDTH * 1.04, 0.22);
+    const shadowMat = new THREE.MeshBasicMaterial({
+      map: shadowTex,
+      transparent: true,
+      opacity: 0.55,
+      side: THREE.DoubleSide
+    });
+    contactShadowMesh = new THREE.Mesh(shadowGeo, shadowMat);
+    // Positioned along the top border of the card, extending slightly downwards
+    contactShadowMesh.position.set(0, HALF_HEIGHT - 0.11, 0.001);
+    arStage.add(contactShadowMesh);
+
+    // ── Top-Edge Gilded Hinge Crease Line (z = 0.002) ──
+    const hingeGeo = new THREE.PlaneGeometry(CARD_WIDTH * 1.02, 0.006);
+    const hingeMat = new THREE.MeshBasicMaterial({ color: 0xf4c068, side: THREE.DoubleSide });
+    hingeLineMesh = new THREE.Mesh(hingeGeo, hingeMat);
+    hingeLineMesh.position.set(0, HALF_HEIGHT, 0.002);
+    arStage.add(hingeLineMesh);
+
+    // ── Pivot Transform Group (Hinged at TOP-EDGE: y = +HALF_HEIGHT) ──
     cardPivotGroup = new THREE.Group();
-    cardPivotGroup.position.set(0, -HALF_HEIGHT, 0.004);
+    cardPivotGroup.position.set(0, HALF_HEIGHT, 0.003);
+    // Initial upright pitch angle (~68 degrees facing the viewer)
+    cardPivotGroup.rotation.x = 1.18;
     arStage.add(cardPivotGroup);
 
     // ── High-Definition Unlit Video Texture with Smooth Opacity Fade ──
@@ -559,7 +599,7 @@ async function startAR() {
     videoTexture.magFilter = THREE.LinearFilter;
     videoTexture.generateMipmaps = false;
 
-    // Upright geometry extending upwards from bottom hinge (Auto Mode)
+    // Video Geometry extending upwards from the top-edge hinge
     const videoGeo = new THREE.PlaneGeometry(CARD_WIDTH, CARD_HEIGHT);
     videoMat = new THREE.MeshBasicMaterial({
       map: videoTexture,
@@ -583,30 +623,20 @@ async function startAR() {
     backMesh.position.set(0, HALF_HEIGHT, -0.003);
     cardPivotGroup.add(backMesh);
 
-    // ── Romantic Floating Golden Sparkles (Seamless, No Chunky Props) ──
+    // ── Romantic Floating Golden Sparkles ──
     particlesGroup = createAtmosphericParticles();
-    arStage.add(particlesGroup);
+    cardPivotGroup.add(particlesGroup);
 
     // ── Target Found & Lost Callbacks ─────────────────
     anchor.onTargetFound = () => {
       isTargetFound = true;
+      hasEverLocked = true;
       lastTrackedTime = performance.now();
       hudDot.className = 'badge-dot';
       hudStatusText.textContent = 'Card Locked • Playing';
 
-      if (arVideo.paused && !userManuallyPaused) {
-        arVideo.play().catch(e => {
-          console.warn('Video play error on lock, forcing muted:', e);
-          arVideo.muted = true;
-          arVideo.play().catch(() => {});
-        });
-      }
+      tryPlayAudioUnmuted();
       playPauseBtn.textContent = '⏸️';
-
-      // Show unmute hint if still muted
-      if (arVideo.muted && !hasUnmutedOnce) {
-        unmuteToast.style.display = 'block';
-      }
 
       if (navigator.vibrate) {
         try { navigator.vibrate(50); } catch(e) {}
@@ -615,7 +645,7 @@ async function startAR() {
 
     anchor.onTargetLost = () => {
       isTargetFound = false;
-      // Controlled via dual-speed watchdog in render loop
+      // Controlled smoothly via 1200ms inertial watchdog in render loop
     };
 
     // Start MindAR Engine
@@ -632,19 +662,22 @@ async function startAR() {
     scannerOverlay.style.display = 'flex';
     hud.style.display = 'block';
 
-    // ── 7. Render Loop with Frustum Boundary Guard & 1.2s Inertial Buffer ──
+    // ── 7. Render Loop with 1200ms Inertial Hold & Top-Edge Adaptive Pitch ──
     renderer.setAnimationLoop(() => {
       const now = performance.now();
 
       // 1. Maintain Stable 3D Anchor Transform with Smooth Filtering
       let isOpticalTracking = false;
       if (anchor && anchor.group && arStage) {
-        const m = anchor.group.matrix.elements;
-        isOpticalTracking = isTargetFound && (m[0] !== 0 || m[5] !== 0 || m[10] !== 0);
+        const m = anchor.group.matrixWorld.elements;
+        isOpticalTracking = anchor.group.visible && (m[0] !== 0 || m[5] !== 0 || m[10] !== 0);
 
         if (isOpticalTracking) {
           lastTrackedTime = now;
-          anchor.group.matrix.decompose(targetPos, targetQuat, targetScale);
+          hasEverLocked = true;
+          isTargetFound = true;
+
+          anchor.group.matrixWorld.decompose(targetPos, targetQuat, targetScale);
 
           if (!isPoseInitialized) {
             currentPos.copy(targetPos);
@@ -652,61 +685,58 @@ async function startAR() {
             currentScale.copy(targetScale);
             isPoseInitialized = true;
           } else {
-            currentPos.lerp(targetPos, 0.35);
-            currentQuat.slerp(targetQuat, 0.35);
-            currentScale.lerp(targetScale, 0.35);
+            currentPos.lerp(targetPos, 0.45);
+            currentQuat.slerp(targetQuat, 0.45);
+            currentScale.lerp(targetScale, 0.45);
           }
 
           arStage.matrix.compose(currentPos, currentQuat, currentScale);
           arStage.matrixWorld.copy(arStage.matrix);
           arStage.matrixWorldNeedsUpdate = true;
           lastValidMatrix.copy(arStage.matrix);
-        }
-      }
 
-      // 2. Screen Frustum Boundary Guard
-      // Project the 3D card anchor onto 2D normalized device coordinates (NDC [-1, 1])
-      _cardCenterWorld.setFromMatrixPosition(arStage.matrix);
-      _screenPos.copy(_cardCenterWorld).project(camera);
-
-      const isInsideScreenFrustum = (
-        _screenPos.z < 1.0 && // in front of camera
-        Math.abs(_screenPos.x) <= 1.25 &&
-        Math.abs(_screenPos.y) <= 1.25
-      );
-
-      // Dual-Speed Decision:
-      // If phone pans away (card leaves camera view) -> 250ms Fast Exit!
-      // If camera is still facing the card (steep angle tilt or finger covering) -> 1200ms Inertial Grace Buffer!
-      const allowedGrace = isInsideScreenFrustum ? INERTIAL_TILT_TIMEOUT : FAST_EXIT_TIMEOUT;
-      const elapsedSinceTracked = now - lastTrackedTime;
-      const shouldShow = (lastTrackedTime > 0) && (elapsedSinceTracked < allowedGrace);
-
-      if (shouldShow) {
-        // Inertial Hold: Keep orientation and matrix steady during momentary frame drops
-        if (!isOpticalTracking) {
+        } else if (hasEverLocked) {
+          // Inertial Pose Hold: hold steady during frame drops / grazing tilt angles
           arStage.matrix.copy(lastValidMatrix);
           arStage.matrixWorld.copy(arStage.matrix);
           arStage.matrixWorldNeedsUpdate = true;
         }
+      }
+
+      // 2. Watchdog Evaluation: 1200ms Inertial Hold
+      const elapsedSinceTracked = now - lastTrackedTime;
+      const shouldShow = hasEverLocked && (lastTrackedTime > 0) && (elapsedSinceTracked < HOLD_GRACE_PERIOD_MS);
+
+      if (shouldShow) {
         arStage.visible = true;
 
         // Smooth Opacity Fade-In
         videoMat.opacity = THREE.MathUtils.lerp(videoMat.opacity, 1.0, 0.2);
         backMat.opacity = THREE.MathUtils.lerp(backMat.opacity, 1.0, 0.2);
 
-        // Dynamic Auto Camera-Facing Billboard
-        arStage.getWorldQuaternion(parentQuat);
-        targetLocalQuat.copy(parentQuat).invert();
-        cardPivotGroup.quaternion.slerp(targetLocalQuat, 0.16);
+        // 3. Adaptive Viewing Angle on Straight Phone
+        // Dynamically adjusts pitch around top-edge hinge so screen tilts toward the viewer's eyes
+        camera.getWorldPosition(_worldCamPos);
+        _localCamPos.copy(_worldCamPos);
+        arStage.worldToLocal(_localCamPos);
+
+        const angleToViewer = Math.atan2(-_localCamPos.y, _localCamPos.z);
+        // Clamp tilt between 32° and 76° for ergonomic viewing
+        const clampedTilt = Math.max(0.55, Math.min(1.32, angleToViewer));
+        cardPivotGroup.rotation.x += (clampedTilt - cardPivotGroup.rotation.x) * 0.12;
 
         if (arVideo.paused && !userManuallyPaused) {
-          arVideo.play().catch(() => {});
+          tryPlayAudioUnmuted();
           playPauseBtn.textContent = '⏸️';
         }
 
-        hudDot.className = 'badge-dot';
-        hudStatusText.textContent = isOpticalTracking ? 'Card Locked • Playing' : 'Card Anchored • Playing';
+        if (isOpticalTracking) {
+          hudDot.className = 'badge-dot';
+          hudStatusText.textContent = 'Card Locked • Playing';
+        } else {
+          hudDot.className = 'badge-dot lost';
+          hudStatusText.textContent = 'Card Anchored • Playing';
+        }
         scannerOverlay.style.display = 'none';
 
         // Animate particles
@@ -721,8 +751,8 @@ async function startAR() {
             p.rotation.x += p.userData.rotX;
             p.rotation.y += p.userData.rotY;
 
-            if (p.position.y < -1.1) {
-              p.position.y = 1.1;
+            if (p.position.y < -0.2) {
+              p.position.y = CARD_HEIGHT + 0.2;
               p.position.x = (Math.random() - 0.5) * 1.6;
             }
           });
@@ -758,21 +788,6 @@ async function startAR() {
     errorBox.style.display = 'flex';
   }
 }
-
-// ── Seamless Audio Unlock Gesture ───────────────────────────────────────────
-function unlockAudio() {
-  if (arVideo.muted) {
-    arVideo.muted = false;
-    hasUnmutedOnce = true;
-    muteBtn.textContent = '🔊';
-    unmuteToast.style.display = 'none';
-    if (arVideo.paused && isTargetFound && !userManuallyPaused) {
-      arVideo.play().catch(() => {});
-    }
-  }
-}
-window.addEventListener('click', unlockAudio);
-window.addEventListener('touchstart', unlockAudio, { passive: true });
 
 // ── Progress & Time Formatter ────────────────────────────────────────────────
 function formatTime(seconds) {
@@ -811,7 +826,7 @@ playPauseBtn.onclick = (e) => {
   e.stopPropagation();
   if (arVideo.paused) {
     userManuallyPaused = false;
-    arVideo.play().catch(() => {});
+    tryPlayAudioUnmuted();
     playPauseBtn.textContent = '⏸️';
   } else {
     userManuallyPaused = true;
@@ -823,10 +838,6 @@ playPauseBtn.onclick = (e) => {
 muteBtn.onclick = (e) => {
   e.stopPropagation();
   arVideo.muted = !arVideo.muted;
-  if (!arVideo.muted) {
-    hasUnmutedOnce = true;
-    unmuteToast.style.display = 'none';
-  }
   muteBtn.textContent = arVideo.muted ? '🔇' : '🔊';
 };
 
@@ -834,7 +845,7 @@ replayBtn.onclick = (e) => {
   e.stopPropagation();
   arVideo.currentTime = 0;
   userManuallyPaused = false;
-  arVideo.play().catch(() => {});
+  tryPlayAudioUnmuted();
   playPauseBtn.textContent = '⏸️';
 };
 
