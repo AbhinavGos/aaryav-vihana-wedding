@@ -401,12 +401,12 @@ const retryBtn = document.getElementById('retryBtn');
 let mindarThree = null;
 let anchor = null;
 let arStage = null;
-let cardPivotGroup = null;
+let topEdgeHinge = null;
 let videoMesh = null;
 let videoMat = null;
 let backMesh = null;
 let backMat = null;
-let hingeLineMesh = null;
+let creaseMesh = null;
 let contactShadowMesh = null;
 let particlesGroup = null;
 let matGold = null;
@@ -419,8 +419,69 @@ let hasEverLocked = false;
 let lastTrackedTime = 0;
 let userManuallyPaused = false;
 
-// Calibrated 1200ms Inertial Hold for Phone Tilting & Angle Deviations
-const HOLD_GRACE_PERIOD_MS = 1200;
+// ── Dual-Gated Inertial Persistence (Gyroscope / Orientation Gating) ─────────
+// Holds up to 8s while facing card; instantly cuts off (< 200ms) if turned away to a wall (> 22°).
+const MAX_PERSISTENCE_DURATION_MS = 8000;
+const POINTING_AWAY_THRESHOLD_DEG = 22.0;
+
+let deviceOrientation = { alpha: 0, beta: 0, gamma: 0, initialized: false };
+let lastLockedOrientation = { alpha: 0, beta: 0, gamma: 0, valid: false };
+
+window.addEventListener('deviceorientation', (e) => {
+  if (e.alpha !== null && e.beta !== null && e.gamma !== null) {
+    deviceOrientation.alpha = e.alpha; // Heading (0-360)
+    deviceOrientation.beta = e.beta;   // Pitch (-180 to 180)
+    deviceOrientation.gamma = e.gamma; // Roll (-90 to 90)
+    deviceOrientation.initialized = true;
+  }
+}, { passive: true });
+
+function getAngularDeviationFromLock() {
+  if (!deviceOrientation.initialized || !lastLockedOrientation.valid) return 0;
+  const dAlpha = Math.abs(deviceOrientation.alpha - lastLockedOrientation.alpha);
+  const diffAlpha = dAlpha > 180 ? 360 - dAlpha : dAlpha;
+  const diffBeta = Math.abs(deviceOrientation.beta - lastLockedOrientation.beta);
+  const diffGamma = Math.abs(deviceOrientation.gamma - lastLockedOrientation.gamma);
+  return Math.sqrt(diffAlpha * diffAlpha + diffBeta * diffBeta + diffGamma * diffGamma);
+}
+
+function evaluatePersistence(now, isOpticalTracking) {
+  if (isOpticalTracking) {
+    lastTrackedTime = now;
+    hasEverLocked = true;
+    if (deviceOrientation.initialized) {
+      lastLockedOrientation = { ...deviceOrientation, valid: true };
+    }
+    return { shouldRender: true, isGhost: false };
+  }
+
+  if (!hasEverLocked || lastTrackedTime === 0) {
+    return { shouldRender: false, isGhost: false };
+  }
+
+  const elapsed = now - lastTrackedTime;
+  const angularDeviation = getAngularDeviationFromLock();
+
+  // Instant cutoff if user turned phone away toward wall/ceiling
+  if (deviceOrientation.initialized && lastLockedOrientation.valid && angularDeviation > POINTING_AWAY_THRESHOLD_DEG) {
+    return { shouldRender: false, isGhost: false, reason: 'pointed_away' };
+  }
+
+  // Generous hold while phone remains pointing at the card
+  if (elapsed < MAX_PERSISTENCE_DURATION_MS) {
+    return { shouldRender: true, isGhost: true, reason: 'inertial_hold' };
+  }
+
+  return { shouldRender: false, isGhost: false, reason: 'timeout' };
+}
+
+// ── Card & Video Metrics (720x1280 ratio = 1.7777778) ───────────────────────
+const CARD_WIDTH = 1.0;
+const CARD_HEIGHT = 1280 / 720; // 1.7777778
+const HALF_HEIGHT = CARD_HEIGHT / 2; // 0.8888889
+
+const VIDEO_WIDTH = 1.0;
+const VIDEO_HEIGHT = 1280 / 720; // 1.7777778
 
 // Filtering & Smooth Tracking Matrices
 const currentPos = new THREE.Vector3();
@@ -432,26 +493,21 @@ const targetScale = new THREE.Vector3(1, 1, 1);
 const lastValidMatrix = new THREE.Matrix4();
 let isPoseInitialized = false;
 
-// Card Geometry: 720 x 1280 (Ratio = 1280 / 720 = 1.7777778)
-const CARD_WIDTH = 1.0;
-const CARD_HEIGHT = 1280 / 720; // 1.7777778
-const HALF_HEIGHT = CARD_HEIGHT / 2; // 0.8888889
-
 // Adaptive Pitch Vector Helpers
 const _worldCamPos = new THREE.Vector3();
 const _localCamPos = new THREE.Vector3();
 
 // ── Contact Shadow Texture along Hinge ───────────────────────────────────────
-function createContactShadowTexture() {
+function createHingeContactShadowTexture() {
   const canvas = document.createElement('canvas');
-  canvas.width = 256; canvas.height = 64;
+  canvas.width = 512; canvas.height = 128;
   const ctx = canvas.getContext('2d');
-  const grad = ctx.createLinearGradient(0, 0, 0, 64);
-  grad.addColorStop(0, 'rgba(0, 0, 0, 0.65)');
-  grad.addColorStop(0.35, 'rgba(0, 0, 0, 0.35)');
-  grad.addColorStop(1, 'rgba(0, 0, 0, 0.0)');
+  const grad = ctx.createLinearGradient(0, 0, 0, 128);
+  grad.addColorStop(0.0, 'rgba(0, 0, 0, 0.75)');
+  grad.addColorStop(0.25, 'rgba(0, 0, 0, 0.35)');
+  grad.addColorStop(1.0, 'rgba(0, 0, 0, 0.0)');
   ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, 256, 64);
+  ctx.fillRect(0, 0, 512, 128);
   return new THREE.CanvasTexture(canvas);
 }
 
@@ -469,9 +525,9 @@ function createAtmosphericParticles() {
     const mat = (rnd < 0.5) ? matGold : (rnd < 0.8) ? matRose : matIvory;
     const p = new THREE.Mesh(geo, mat);
     p.position.set(
-      (Math.random() - 0.5) * 1.6,
-      (Math.random() - 0.5) * 2.2,
-      (Math.random() - 0.5) * 0.5 + 0.1
+      (Math.random() - 0.5) * 1.5,
+      Math.random() * (VIDEO_HEIGHT + 0.3),
+      (Math.random() - 0.5) * 0.4 + 0.08
     );
     p.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, 0);
     p.userData = {
@@ -485,11 +541,32 @@ function createAtmosphericParticles() {
   return group;
 }
 
+// ── Strict 1-DOF Hinge Calculation (Zero Roll, Zero Skew) ───────────────────
+function updateHingeAngle(camera, stage, hinge) {
+  _worldCamPos.setFromMatrixPosition(camera.matrixWorld);
+  _localCamPos.copy(_worldCamPos);
+  stage.worldToLocal(_localCamPos);
+
+  // Project camera vector strictly relative to top-edge hinge point
+  const dy = _localCamPos.y - HALF_HEIGHT;
+  const dz = _localCamPos.z - 0.002;
+
+  // Compute pitch elevation angle strictly around local X axis
+  const angleToViewer = Math.atan2(-dy, dz);
+  // Clamp between 58° (1.01 rad) and 78° (1.36 rad) for optimal upright easel viewing
+  const targetTilt = THREE.MathUtils.clamp(angleToViewer, 1.01, 1.36);
+
+  // Smoothly interpolate pitch while strictly keeping Y and Z rotation at zero
+  hinge.rotation.order = 'XYZ';
+  hinge.rotation.x += (targetTilt - hinge.rotation.x) * 0.10;
+  hinge.rotation.y = 0; // Strict lock against yaw drift
+  hinge.rotation.z = 0; // Strict lock against roll/twist skew
+}
+
 // ── Audio Playback Engine (Unmuted by Default) ──────────────────────────────
 function tryPlayAudioUnmuted() {
   if (userManuallyPaused) return;
 
-  // Attempt unmuted play first
   arVideo.muted = false;
   arVideo.volume = 1.0;
   muteBtn.textContent = '🔊';
@@ -515,6 +592,9 @@ function unlockAudioOnFirstInteraction() {
       arVideo.play().catch(() => {});
     }
   }
+  if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+    DeviceOrientationEvent.requestPermission().catch(() => {});
+  }
 }
 window.addEventListener('pointerdown', unlockAudioOnFirstInteraction, { passive: true });
 window.addEventListener('touchstart', unlockAudioOnFirstInteraction, { passive: true });
@@ -525,7 +605,6 @@ async function startAR() {
   loadingView.style.display = 'flex';
   loadStatus.textContent = 'Starting Camera & Target Engine...';
 
-  // Priming unmuted video playback
   arVideo.muted = false;
   arVideo.volume = 1.0;
   arVideo.playsInline = true;
@@ -533,14 +612,14 @@ async function startAR() {
   arContainer.style.display = 'block';
 
   try {
-    // Calibrated MindAR: missTolerance 14 frames (~450ms) + filterBeta 15.0 for rock-solid stability
+    // Calibrated MindAR: filterMinCF 0.001, filterBeta 2.0, missTolerance 25
     mindarThree = new MindARThree({
       container: arContainer,
       imageTargetSrc: './targets.mind',
-      filterMinCF: 0.0001,
-      filterBeta: 15.0,
+      filterMinCF: 0.001,
+      filterBeta: 2.0,
       warmupTolerance: 1,
-      missTolerance: 14,
+      missTolerance: 25,
       uiLoading: "no",
       uiScanning: "no"
     });
@@ -558,19 +637,20 @@ async function startAR() {
     // Anchor on Card Image Target (Index 0)
     anchor = mindarThree.addAnchor(0);
 
-    // ── Persistent AR Stage Attached to Scene ──
+    // ── Persistent AR Stage (Decoupled from anchor.group for smooth inertial hold) ──
     arStage = new THREE.Group();
     arStage.matrixAutoUpdate = false;
     arStage.visible = false;
     scene.add(arStage);
 
-    // ── Top-Edge Contact Shadow Plane (Lies flat on physical card below hinge) ──
-    const shadowTex = createContactShadowTexture();
+    // ── 1. Contact Shadow on Physical Card Surface (Below Top Hinge) ──
+    const shadowTex = createHingeContactShadowTexture();
     const shadowGeo = new THREE.PlaneGeometry(CARD_WIDTH * 1.04, 0.22);
     const shadowMat = new THREE.MeshBasicMaterial({
       map: shadowTex,
       transparent: true,
       opacity: 0.55,
+      depthWrite: false,
       side: THREE.DoubleSide
     });
     contactShadowMesh = new THREE.Mesh(shadowGeo, shadowMat);
@@ -578,29 +658,31 @@ async function startAR() {
     contactShadowMesh.position.set(0, HALF_HEIGHT - 0.11, 0.001);
     arStage.add(contactShadowMesh);
 
-    // ── Top-Edge Gilded Hinge Crease Line (z = 0.002) ──
-    const hingeGeo = new THREE.PlaneGeometry(CARD_WIDTH * 1.02, 0.006);
-    const hingeMat = new THREE.MeshBasicMaterial({ color: 0xf4c068, side: THREE.DoubleSide });
-    hingeLineMesh = new THREE.Mesh(hingeGeo, hingeMat);
-    hingeLineMesh.position.set(0, HALF_HEIGHT, 0.002);
-    arStage.add(hingeLineMesh);
+    // ── 2. Gilded Score / Crease Line at Top Edge ──
+    const creaseGeo = new THREE.PlaneGeometry(CARD_WIDTH * 1.02, 0.006);
+    const creaseMat = new THREE.MeshBasicMaterial({ color: 0xf4c068, side: THREE.DoubleSide });
+    creaseMesh = new THREE.Mesh(creaseGeo, creaseMat);
+    creaseMesh.position.set(0, HALF_HEIGHT, 0.002);
+    arStage.add(creaseMesh);
 
-    // ── Pivot Transform Group (Hinged at TOP-EDGE: y = +HALF_HEIGHT) ──
-    cardPivotGroup = new THREE.Group();
-    cardPivotGroup.position.set(0, HALF_HEIGHT, 0.003);
-    // Initial upright pitch angle (~68 degrees facing the viewer)
-    cardPivotGroup.rotation.x = 1.18;
-    arStage.add(cardPivotGroup);
+    // ── 3. Top-Edge Hinge Group (STRICTLY PINNED AT y = +HALF_HEIGHT) ──
+    topEdgeHinge = new THREE.Group();
+    topEdgeHinge.position.set(0, HALF_HEIGHT, 0.003);
+    topEdgeHinge.rotation.order = 'XYZ';
+    topEdgeHinge.rotation.set(1.18, 0, 0); // 68° initial pitch
+    arStage.add(topEdgeHinge);
 
-    // ── High-Definition Unlit Video Texture with Smooth Opacity Fade ──
+    // ── 4. Video Plane with Translated Bottom Pivot (Zero Downward Drift) ──
     const videoTexture = new THREE.VideoTexture(arVideo);
     videoTexture.colorSpace = THREE.SRGBColorSpace;
     videoTexture.minFilter = THREE.LinearFilter;
     videoTexture.magFilter = THREE.LinearFilter;
     videoTexture.generateMipmaps = false;
 
-    // Video Geometry extending upwards from the top-edge hinge
-    const videoGeo = new THREE.PlaneGeometry(CARD_WIDTH, CARD_HEIGHT);
+    const videoGeo = new THREE.PlaneGeometry(VIDEO_WIDTH, VIDEO_HEIGHT);
+    // KEY MATH: Translate geometry so local origin (0,0) is at the bottom center of the plane!
+    videoGeo.translate(0, VIDEO_HEIGHT / 2, 0);
+
     videoMat = new THREE.MeshBasicMaterial({
       map: videoTexture,
       side: THREE.DoubleSide,
@@ -608,11 +690,12 @@ async function startAR() {
       opacity: 0
     });
     videoMesh = new THREE.Mesh(videoGeo, videoMat);
-    videoMesh.position.set(0, HALF_HEIGHT, 0);
-    cardPivotGroup.add(videoMesh);
+    videoMesh.position.set(0, 0, 0.001); // Local bottom edge is pinned at (0, 0, 0) of the hinge
+    topEdgeHinge.add(videoMesh);
 
-    // Recessed Gilded Backing Plane (z = -0.003) to prevent GPU Z-fighting
-    const backGeo = new THREE.PlaneGeometry(CARD_WIDTH + 0.016, CARD_HEIGHT + 0.016);
+    // ── 5. Cardstock Backing Plane (Translated identically) ──
+    const backGeo = new THREE.PlaneGeometry(VIDEO_WIDTH + 0.016, VIDEO_HEIGHT + 0.016);
+    backGeo.translate(0, (VIDEO_HEIGHT + 0.016) / 2, 0);
     backMat = new THREE.MeshBasicMaterial({
       color: 0xc89b38,
       side: THREE.DoubleSide,
@@ -620,12 +703,12 @@ async function startAR() {
       opacity: 0
     });
     backMesh = new THREE.Mesh(backGeo, backMat);
-    backMesh.position.set(0, HALF_HEIGHT, -0.003);
-    cardPivotGroup.add(backMesh);
+    backMesh.position.set(0, 0, -0.003);
+    topEdgeHinge.add(backMesh);
 
-    // ── Romantic Floating Golden Sparkles ──
+    // ── 6. Romantic Floating Golden Sparkles ──
     particlesGroup = createAtmosphericParticles();
-    cardPivotGroup.add(particlesGroup);
+    topEdgeHinge.add(particlesGroup);
 
     // ── Target Found & Lost Callbacks ─────────────────
     anchor.onTargetFound = () => {
@@ -645,7 +728,7 @@ async function startAR() {
 
     anchor.onTargetLost = () => {
       isTargetFound = false;
-      // Controlled smoothly via 1200ms inertial watchdog in render loop
+      // Controlled via Gyroscope / Deviation Gate in render loop
     };
 
     // Start MindAR Engine
@@ -662,7 +745,7 @@ async function startAR() {
     scannerOverlay.style.display = 'flex';
     hud.style.display = 'block';
 
-    // ── 7. Render Loop with 1200ms Inertial Hold & Top-Edge Adaptive Pitch ──
+    // ── 7. Render Loop with Gyroscope Gating & Strict 1-DOF Hinge ──
     renderer.setAnimationLoop(() => {
       const now = performance.now();
 
@@ -685,9 +768,9 @@ async function startAR() {
             currentScale.copy(targetScale);
             isPoseInitialized = true;
           } else {
-            currentPos.lerp(targetPos, 0.45);
-            currentQuat.slerp(targetQuat, 0.45);
-            currentScale.lerp(targetScale, 0.45);
+            currentPos.lerp(targetPos, 0.40);
+            currentQuat.slerp(targetQuat, 0.40);
+            currentScale.lerp(targetScale, 0.40);
           }
 
           arStage.matrix.compose(currentPos, currentQuat, currentScale);
@@ -703,27 +786,18 @@ async function startAR() {
         }
       }
 
-      // 2. Watchdog Evaluation: 1200ms Inertial Hold
-      const elapsedSinceTracked = now - lastTrackedTime;
-      const shouldShow = hasEverLocked && (lastTrackedTime > 0) && (elapsedSinceTracked < HOLD_GRACE_PERIOD_MS);
+      // 2. Evaluate Persistence via Gyroscope Deviation Gate
+      const persistence = evaluatePersistence(now, isOpticalTracking);
 
-      if (shouldShow) {
+      if (persistence.shouldRender) {
         arStage.visible = true;
 
         // Smooth Opacity Fade-In
-        videoMat.opacity = THREE.MathUtils.lerp(videoMat.opacity, 1.0, 0.2);
-        backMat.opacity = THREE.MathUtils.lerp(backMat.opacity, 1.0, 0.2);
+        videoMat.opacity = THREE.MathUtils.lerp(videoMat.opacity, 1.0, 0.20);
+        backMat.opacity = THREE.MathUtils.lerp(backMat.opacity, 1.0, 0.20);
 
-        // 3. Adaptive Viewing Angle on Straight Phone
-        // Dynamically adjusts pitch around top-edge hinge so screen tilts toward the viewer's eyes
-        camera.getWorldPosition(_worldCamPos);
-        _localCamPos.copy(_worldCamPos);
-        arStage.worldToLocal(_localCamPos);
-
-        const angleToViewer = Math.atan2(-_localCamPos.y, _localCamPos.z);
-        // Clamp tilt between 32° and 76° for ergonomic viewing
-        const clampedTilt = Math.max(0.55, Math.min(1.32, angleToViewer));
-        cardPivotGroup.rotation.x += (clampedTilt - cardPivotGroup.rotation.x) * 0.12;
+        // Dynamic 1-DOF Hinge pitch toward viewer (Zero roll, Zero yaw)
+        updateHingeAngle(camera, arStage, topEdgeHinge);
 
         if (arVideo.paused && !userManuallyPaused) {
           tryPlayAudioUnmuted();
@@ -739,11 +813,11 @@ async function startAR() {
         }
         scannerOverlay.style.display = 'none';
 
-        // Animate particles
+        // Animate atmospheric particles
         if (particlesGroup) {
           if (matGold) matGold.opacity = 0.85 * videoMat.opacity;
           if (matRose) matRose.opacity = 0.75 * videoMat.opacity;
-          if (matIvory) matIvory.opacity = 0.8 * videoMat.opacity;
+          if (matIvory) matIvory.opacity = 0.80 * videoMat.opacity;
 
           particlesGroup.children.forEach(p => {
             p.position.y -= p.userData.speedY;
@@ -751,9 +825,9 @@ async function startAR() {
             p.rotation.x += p.userData.rotX;
             p.rotation.y += p.userData.rotY;
 
-            if (p.position.y < -0.2) {
-              p.position.y = CARD_HEIGHT + 0.2;
-              p.position.x = (Math.random() - 0.5) * 1.6;
+            if (p.position.y < 0) {
+              p.position.y = VIDEO_HEIGHT + 0.2;
+              p.position.x = (Math.random() - 0.5) * 1.5;
             }
           });
         }
@@ -766,7 +840,7 @@ async function startAR() {
         if (matRose) matRose.opacity = 0;
         if (matIvory) matIvory.opacity = 0;
 
-        if (videoMat.opacity < 0.04) {
+        if (videoMat.opacity < 0.03) {
           arStage.visible = false;
           if (!arVideo.paused) {
             arVideo.pause();
