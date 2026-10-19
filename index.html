@@ -807,11 +807,11 @@ async function startWebAR() {
   arContainer.style.display = 'block';
 
   try {
-    // Responsive MindAR parameters: maxTrack: 1 (suspends wasteful background detection worker when locked)
+    // Responsive MindAR parameters: maxTrack: 2 (enables simultaneous tracking of full card + top 65% sub-target for seamless vertical handoff)
     mindarThree = new MindARThree({
       container: arContainer,
       imageTargetSrc: './targets.mind',
-      maxTrack: 1,
+      maxTrack: 2,
       filterMinCF: 0.0001,
       filterBeta: 15.0,
       warmupTolerance: 1,
@@ -846,32 +846,33 @@ async function startWebAR() {
     const targetH1 = targetAspect1;
     const halfH0 = targetH0 / 2; // +0.888889 (Top edge of full card in Anchor 0 space)
     const halfH1 = targetH1 / 2; // +0.577778 (Top edge of top 65% sub-target in Anchor 1 space)
+    const HINGE_TUCK = 0.04;     // Tucks hinge 0.04 down onto physical card's top gold border (eliminating floating gap)
 
     const visualCardWidth = 0.92;
     const visualCardHeight = visualCardWidth * targetAspect0;
 
-    // ── Gilded Crease Line along physical top edge (z = 0.002) ──
-    const creaseGeo = new THREE.PlaneGeometry(visualCardWidth * 1.02, 0.006);
+    // ── Gilded Extension Fold Seam along physical card edge (z = 0.0012) ──
+    const creaseGeo = new THREE.PlaneGeometry(visualCardWidth * 1.01, 0.008);
     const creaseMat = new THREE.MeshBasicMaterial({ color: currentTheme.edgeColor, side: THREE.DoubleSide });
     const creaseMesh = new THREE.Mesh(creaseGeo, creaseMat);
-    creaseMesh.position.set(0, 0, 0.002);
+    creaseMesh.position.set(0, 0, 0.0012);
     cardRoot.add(creaseMesh);
 
-    // ── Directional Contact Ground Shadow (Lies flat on physical card below top edge) ──
-    const shadowGeo = new THREE.PlaneGeometry(visualCardWidth * 1.04, 0.22);
+    // ── Directional Contact Ground Shadow (Lies flat on physical card below fold) ──
+    const shadowGeo = new THREE.PlaneGeometry(visualCardWidth * 1.02, 0.18);
     const shadowMat = new THREE.MeshBasicMaterial({
       map: createContactShadowTexture(),
       transparent: true,
-      opacity: 0.55,
+      opacity: 0.5,
       depthWrite: false
     });
     const shadowMesh = new THREE.Mesh(shadowGeo, shadowMat);
-    shadowMesh.position.set(0, -0.11, 0.001);
+    shadowMesh.position.set(0, -0.09, 0.0008);
     cardRoot.add(shadowMesh);
 
-    // ── PIVOT GROUP: Strictly Hinged at the Top Edge (y = 0 in cardRoot space) ──
+    // ── PIVOT GROUP: Hinged flush at the card's top margin (z = 0.001) ──
     cardPivotGroup = new THREE.Group();
-    cardPivotGroup.position.set(0, 0, 0.003);
+    cardPivotGroup.position.set(0, 0, 0.001);
     cardPivotGroup.rotation.order = 'XYZ';
     const initialTiltRad = (CONFIG.tiltAngle !== undefined ? CONFIG.tiltAngle : 75) * (Math.PI / 180);
     cardPivotGroup.rotation.x = initialTiltRad;
@@ -893,15 +894,15 @@ async function startWebAR() {
 
       const videoMat = new THREE.MeshBasicMaterial({ map: videoTex, side: THREE.DoubleSide });
       const videoMesh = new THREE.Mesh(videoGeo, videoMat);
-      videoMesh.position.set(0, 0, 0.002);
+      videoMesh.position.set(0, 0, 0.0005);
       cardPivotGroup.add(videoMesh);
 
-      // Recessed metallic backing (z = -0.004) to prevent GPU Z-fighting
-      const backGeo = new THREE.PlaneGeometry(visualCardWidth + 0.02, visualCardHeight + 0.02);
-      backGeo.translate(0, (visualCardHeight + 0.02) / 2, 0);
+      // Recessed metallic backing (z = -0.0015) to prevent GPU Z-fighting
+      const backGeo = new THREE.PlaneGeometry(visualCardWidth + 0.015, visualCardHeight + 0.015);
+      backGeo.translate(0, (visualCardHeight + 0.015) / 2, 0);
       const backMat = new THREE.MeshBasicMaterial({ color: currentTheme.edgeColor, side: THREE.DoubleSide });
       const backMesh = new THREE.Mesh(backGeo, backMat);
-      backMesh.position.set(0, 0, -0.004);
+      backMesh.position.set(0, 0, -0.0015);
       cardPivotGroup.add(backMesh);
     } else {
       // ── B. Multi-Card Deck (Carousel / Triptych / Diorama) ──
@@ -1112,14 +1113,14 @@ async function startWebAR() {
             lastLockedOrientation = { ...deviceOrientation, valid: true };
           }
 
-          // Compute top edge world matrix:
-          // Anchor 0 top edge is at (0, halfH0, 0)
-          // Anchor 1 top edge is at (0, halfH1, 0)
+          // Compute top edge world matrix (tucked onto physical card margin):
+          // Anchor 0 top edge is at (0, halfH0 - HINGE_TUCK, 0)
+          // Anchor 1 top edge is at (0, halfH1 - HINGE_TUCK, 0)
           if (is0Tracking) {
-            _topEdgeMatrix.makeTranslation(0, halfH0, 0);
+            _topEdgeMatrix.makeTranslation(0, halfH0 - HINGE_TUCK, 0);
             _topEdgeMatrix.premultiply(anchor0.group.matrixWorld);
           } else {
-            _topEdgeMatrix.makeTranslation(0, halfH1, 0);
+            _topEdgeMatrix.makeTranslation(0, halfH1 - HINGE_TUCK, 0);
             _topEdgeMatrix.premultiply(anchor1.group.matrixWorld);
           }
 
@@ -1247,9 +1248,9 @@ function updateViewingAngle() {
   _localCamPos.copy(_worldCamPos);
   cardRoot.worldToLocal(_localCamPos);
 
-  // In cardRoot space, hinge is at y = 0, z = 0.003
+  // In cardRoot space, hinge is at y = 0, z = 0.001
   const dy = _localCamPos.y;
-  const dz = _localCamPos.z - 0.003;
+  const dz = _localCamPos.z - 0.001;
   const angleToViewer = Math.atan2(-dy, dz);
 
   // Clamp between 60° (1.05 rad) and 84° (1.46 rad) for optimal upright easel viewing
