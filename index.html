@@ -812,8 +812,8 @@ async function startWebAR() {
       container: arContainer,
       imageTargetSrc: './targets.mind',
       maxTrack: 2,
-      filterMinCF: 0.0001,
-      filterBeta: 15.0,
+      filterMinCF: 0.001,
+      filterBeta: 1.0,
       warmupTolerance: 1,
       missTolerance: 35,
       uiLoading: "no",
@@ -1132,10 +1132,17 @@ async function startWebAR() {
             currentScale.copy(targetScale);
             isPoseInitialized = true;
           } else {
-            // Smooth lerp / slerp to eliminate hand tremors and perspective jumps
-            currentPos.lerp(targetPos, 0.45);
-            currentQuat.slerp(targetQuat, 0.45);
-            currentScale.lerp(targetScale, 0.45);
+            // Dual-speed adaptive smoothing with deadband for rock-solid stability:
+            // Under micro-disturbances (<15mm / <3°), damp heavily (0.08) to lock pose like stone.
+            // On deliberate phone movement, track smoothly (0.22) with zero lag.
+            const dist = currentPos.distanceTo(targetPos);
+            const angleDiff = currentQuat.angleTo(targetQuat);
+            const posFactor = dist < 0.015 ? 0.08 : 0.22;
+            const rotFactor = angleDiff < 0.05 ? 0.08 : 0.22;
+
+            currentPos.lerp(targetPos, posFactor);
+            currentQuat.slerp(targetQuat, rotFactor);
+            currentScale.lerp(targetScale, 0.12);
           }
 
           cardRoot.position.copy(currentPos);
@@ -1256,9 +1263,12 @@ function updateViewingAngle() {
   // Clamp between 60° (1.05 rad) and 84° (1.46 rad) for optimal upright easel viewing
   const clampedTilt = THREE.MathUtils.clamp(angleToViewer, 1.05, 1.46);
 
-  // Strict 1-DOF: only rotate on local X-axis, lock Y and Z to 0
+  // Strict 1-DOF with ~3° deadband: prevents video wobbling/nodding from hand micro-tremors
+  const tiltDiff = Math.abs(clampedTilt - cardPivotGroup.rotation.x);
+  if (tiltDiff > 0.05) { // ~3° deadband
+    cardPivotGroup.rotation.x += (clampedTilt - cardPivotGroup.rotation.x) * 0.05;
+  }
   cardPivotGroup.rotation.order = 'XYZ';
-  cardPivotGroup.rotation.x += (clampedTilt - cardPivotGroup.rotation.x) * 0.12;
   cardPivotGroup.rotation.y = 0; // Strict lock against yaw drift
   cardPivotGroup.rotation.z = 0; // Strict lock against roll tilt/skew
 }
