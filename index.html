@@ -400,7 +400,6 @@ const retryBtn = document.getElementById('retryBtn');
 // 3D Scene Architecture
 let mindarThree = null;
 let anchor = null;
-let arStage = null;
 let topEdgeHinge = null;
 let videoMesh = null;
 let videoMat = null;
@@ -413,85 +412,16 @@ let matGold = null;
 let matRose = null;
 let matIvory = null;
 
-// Tracking State & Watchdog Vectors
 let isTargetFound = false;
-let hasEverLocked = false;
-let lastTrackedTime = 0;
 let userManuallyPaused = false;
 
-// ── Dual-Gated Inertial Persistence (Gyroscope / Orientation Gating) ─────────
-// Holds up to 8s while facing card; instantly cuts off (< 200ms) if turned away to a wall (> 22°).
-const MAX_PERSISTENCE_DURATION_MS = 8000;
-const POINTING_AWAY_THRESHOLD_DEG = 22.0;
-
-let deviceOrientation = { alpha: 0, beta: 0, gamma: 0, initialized: false };
-let lastLockedOrientation = { alpha: 0, beta: 0, gamma: 0, valid: false };
-
-window.addEventListener('deviceorientation', (e) => {
-  if (e.alpha !== null && e.beta !== null && e.gamma !== null) {
-    deviceOrientation.alpha = e.alpha; // Heading (0-360)
-    deviceOrientation.beta = e.beta;   // Pitch (-180 to 180)
-    deviceOrientation.gamma = e.gamma; // Roll (-90 to 90)
-    deviceOrientation.initialized = true;
-  }
-}, { passive: true });
-
-function getAngularDeviationFromLock() {
-  if (!deviceOrientation.initialized || !lastLockedOrientation.valid) return 0;
-  const dAlpha = Math.abs(deviceOrientation.alpha - lastLockedOrientation.alpha);
-  const diffAlpha = dAlpha > 180 ? 360 - dAlpha : dAlpha;
-  const diffBeta = Math.abs(deviceOrientation.beta - lastLockedOrientation.beta);
-  const diffGamma = Math.abs(deviceOrientation.gamma - lastLockedOrientation.gamma);
-  return Math.sqrt(diffAlpha * diffAlpha + diffBeta * diffBeta + diffGamma * diffGamma);
-}
-
-function evaluatePersistence(now, isOpticalTracking) {
-  if (isOpticalTracking) {
-    lastTrackedTime = now;
-    hasEverLocked = true;
-    if (deviceOrientation.initialized) {
-      lastLockedOrientation = { ...deviceOrientation, valid: true };
-    }
-    return { shouldRender: true, isGhost: false };
-  }
-
-  if (!hasEverLocked || lastTrackedTime === 0) {
-    return { shouldRender: false, isGhost: false };
-  }
-
-  const elapsed = now - lastTrackedTime;
-  const angularDeviation = getAngularDeviationFromLock();
-
-  // Instant cutoff if user turned phone away toward wall/ceiling
-  if (deviceOrientation.initialized && lastLockedOrientation.valid && angularDeviation > POINTING_AWAY_THRESHOLD_DEG) {
-    return { shouldRender: false, isGhost: false, reason: 'pointed_away' };
-  }
-
-  // Generous hold while phone remains pointing at the card
-  if (elapsed < MAX_PERSISTENCE_DURATION_MS) {
-    return { shouldRender: true, isGhost: true, reason: 'inertial_hold' };
-  }
-
-  return { shouldRender: false, isGhost: false, reason: 'timeout' };
-}
-
-// ── Card & Video Metrics (720x1280 ratio = 1.7777778) ───────────────────────
+// Card Geometry: 720 x 1280 (Ratio = 1280 / 720 = 1.7777778)
 const CARD_WIDTH = 1.0;
 const CARD_HEIGHT = 1280 / 720; // 1.7777778
 const HALF_HEIGHT = CARD_HEIGHT / 2; // 0.8888889
 
 const VIDEO_WIDTH = 1.0;
 const VIDEO_HEIGHT = 1280 / 720; // 1.7777778
-
-// Filtering & Smooth Tracking Matrices
-const currentPos = new THREE.Vector3();
-const currentQuat = new THREE.Quaternion();
-const currentScale = new THREE.Vector3(1, 1, 1);
-const targetPos = new THREE.Vector3();
-const targetQuat = new THREE.Quaternion();
-const targetScale = new THREE.Vector3(1, 1, 1);
-const lastValidMatrix = new THREE.Matrix4();
-let isPoseInitialized = false;
 
 // Adaptive Pitch Vector Helpers
 const _worldCamPos = new THREE.Vector3();
@@ -542,10 +472,10 @@ function createAtmosphericParticles() {
 }
 
 // ── Strict 1-DOF Hinge Calculation (Zero Roll, Zero Skew) ───────────────────
-function updateHingeAngle(camera, stage, hinge) {
+function updateHingeAngle(camera, parentGroup, hinge) {
   _worldCamPos.setFromMatrixPosition(camera.matrixWorld);
   _localCamPos.copy(_worldCamPos);
-  stage.worldToLocal(_localCamPos);
+  parentGroup.worldToLocal(_localCamPos);
 
   // Project camera vector strictly relative to top-edge hinge point
   const dy = _localCamPos.y - HALF_HEIGHT;
@@ -556,9 +486,9 @@ function updateHingeAngle(camera, stage, hinge) {
   // Clamp between 58° (1.01 rad) and 78° (1.36 rad) for optimal upright easel viewing
   const targetTilt = THREE.MathUtils.clamp(angleToViewer, 1.01, 1.36);
 
-  // Smoothly interpolate pitch while strictly keeping Y and Z rotation at zero
+  // Smoothly interpolate pitch while strictly keeping Y and Z rotation locked at zero
   hinge.rotation.order = 'XYZ';
-  hinge.rotation.x += (targetTilt - hinge.rotation.x) * 0.10;
+  hinge.rotation.x += (targetTilt - hinge.rotation.x) * 0.12;
   hinge.rotation.y = 0; // Strict lock against yaw drift
   hinge.rotation.z = 0; // Strict lock against roll/twist skew
 }
@@ -592,15 +522,12 @@ function unlockAudioOnFirstInteraction() {
       arVideo.play().catch(() => {});
     }
   }
-  if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
-    DeviceOrientationEvent.requestPermission().catch(() => {});
-  }
 }
 window.addEventListener('pointerdown', unlockAudioOnFirstInteraction, { passive: true });
 window.addEventListener('touchstart', unlockAudioOnFirstInteraction, { passive: true });
 window.addEventListener('click', unlockAudioOnFirstInteraction);
 
-// ── Start WebAR Pipeline (Direct Launch, No Landing Gate) ───────────────────
+// ── Start WebAR Pipeline (Direct Launch, Native Anchor Binding) ────────────
 async function startAR() {
   loadingView.style.display = 'flex';
   loadStatus.textContent = 'Starting Camera & Target Engine...';
@@ -612,14 +539,14 @@ async function startAR() {
   arContainer.style.display = 'block';
 
   try {
-    // Calibrated MindAR: filterMinCF 0.001, filterBeta 2.0, missTolerance 25
+    // Calibrated MindAR: filterBeta 1000.0 (MindAR default native responsiveness) + missTolerance 30
     mindarThree = new MindARThree({
       container: arContainer,
       imageTargetSrc: './targets.mind',
       filterMinCF: 0.001,
-      filterBeta: 2.0,
+      filterBeta: 1000.0,
       warmupTolerance: 1,
-      missTolerance: 25,
+      missTolerance: 30,
       uiLoading: "no",
       uiScanning: "no"
     });
@@ -634,14 +561,8 @@ async function startAR() {
     keyLight.position.set(2, 4, 3);
     scene.add(keyLight);
 
-    // Anchor on Card Image Target (Index 0)
+    // Anchor directly on Card Image Target (Index 0)
     anchor = mindarThree.addAnchor(0);
-
-    // ── Persistent AR Stage (Decoupled from anchor.group for smooth inertial hold) ──
-    arStage = new THREE.Group();
-    arStage.matrixAutoUpdate = false;
-    arStage.visible = false;
-    scene.add(arStage);
 
     // ── 1. Contact Shadow on Physical Card Surface (Below Top Hinge) ──
     const shadowTex = createHingeContactShadowTexture();
@@ -654,23 +575,22 @@ async function startAR() {
       side: THREE.DoubleSide
     });
     contactShadowMesh = new THREE.Mesh(shadowGeo, shadowMat);
-    // Positioned along the top border of the card, extending slightly downwards
     contactShadowMesh.position.set(0, HALF_HEIGHT - 0.11, 0.001);
-    arStage.add(contactShadowMesh);
+    anchor.group.add(contactShadowMesh);
 
-    // ── 2. Gilded Score / Crease Line at Top Edge ──
+    // ── 2. Gilded Crease Line at Top Edge ──
     const creaseGeo = new THREE.PlaneGeometry(CARD_WIDTH * 1.02, 0.006);
     const creaseMat = new THREE.MeshBasicMaterial({ color: 0xf4c068, side: THREE.DoubleSide });
     creaseMesh = new THREE.Mesh(creaseGeo, creaseMat);
     creaseMesh.position.set(0, HALF_HEIGHT, 0.002);
-    arStage.add(creaseMesh);
+    anchor.group.add(creaseMesh);
 
     // ── 3. Top-Edge Hinge Group (STRICTLY PINNED AT y = +HALF_HEIGHT) ──
     topEdgeHinge = new THREE.Group();
     topEdgeHinge.position.set(0, HALF_HEIGHT, 0.003);
     topEdgeHinge.rotation.order = 'XYZ';
     topEdgeHinge.rotation.set(1.18, 0, 0); // 68° initial pitch
-    arStage.add(topEdgeHinge);
+    anchor.group.add(topEdgeHinge);
 
     // ── 4. Video Plane with Translated Bottom Pivot (Zero Downward Drift) ──
     const videoTexture = new THREE.VideoTexture(arVideo);
@@ -713,8 +633,6 @@ async function startAR() {
     // ── Target Found & Lost Callbacks ─────────────────
     anchor.onTargetFound = () => {
       isTargetFound = true;
-      hasEverLocked = true;
-      lastTrackedTime = performance.now();
       hudDot.className = 'badge-dot';
       hudStatusText.textContent = 'Card Locked • Playing';
 
@@ -728,7 +646,6 @@ async function startAR() {
 
     anchor.onTargetLost = () => {
       isTargetFound = false;
-      // Controlled via Gyroscope / Deviation Gate in render loop
     };
 
     // Start MindAR Engine
@@ -745,72 +662,26 @@ async function startAR() {
     scannerOverlay.style.display = 'flex';
     hud.style.display = 'block';
 
-    // ── 7. Render Loop with Gyroscope Gating & Strict 1-DOF Hinge ──
+    // ── 7. Render Loop with Native Anchor Tracking & Clean Fade-Out ──
     renderer.setAnimationLoop(() => {
-      const now = performance.now();
+      // MindAR internally handles optical flow tracking and its 30-frame missTolerance buffer
+      const isTracking = anchor && anchor.group && anchor.group.visible;
 
-      // 1. Maintain Stable 3D Anchor Transform with Smooth Filtering
-      let isOpticalTracking = false;
-      if (anchor && anchor.group && arStage) {
-        const m = anchor.group.matrixWorld.elements;
-        isOpticalTracking = anchor.group.visible && (m[0] !== 0 || m[5] !== 0 || m[10] !== 0);
-
-        if (isOpticalTracking) {
-          lastTrackedTime = now;
-          hasEverLocked = true;
-          isTargetFound = true;
-
-          anchor.group.matrixWorld.decompose(targetPos, targetQuat, targetScale);
-
-          if (!isPoseInitialized) {
-            currentPos.copy(targetPos);
-            currentQuat.copy(targetQuat);
-            currentScale.copy(targetScale);
-            isPoseInitialized = true;
-          } else {
-            currentPos.lerp(targetPos, 0.40);
-            currentQuat.slerp(targetQuat, 0.40);
-            currentScale.lerp(targetScale, 0.40);
-          }
-
-          arStage.matrix.compose(currentPos, currentQuat, currentScale);
-          arStage.matrixWorld.copy(arStage.matrix);
-          arStage.matrixWorldNeedsUpdate = true;
-          lastValidMatrix.copy(arStage.matrix);
-
-        } else if (hasEverLocked) {
-          // Inertial Pose Hold: hold steady during frame drops / grazing tilt angles
-          arStage.matrix.copy(lastValidMatrix);
-          arStage.matrixWorld.copy(arStage.matrix);
-          arStage.matrixWorldNeedsUpdate = true;
-        }
-      }
-
-      // 2. Evaluate Persistence via Gyroscope Deviation Gate
-      const persistence = evaluatePersistence(now, isOpticalTracking);
-
-      if (persistence.shouldRender) {
-        arStage.visible = true;
-
+      if (isTracking) {
         // Smooth Opacity Fade-In
-        videoMat.opacity = THREE.MathUtils.lerp(videoMat.opacity, 1.0, 0.20);
-        backMat.opacity = THREE.MathUtils.lerp(backMat.opacity, 1.0, 0.20);
+        videoMat.opacity = THREE.MathUtils.lerp(videoMat.opacity, 1.0, 0.25);
+        backMat.opacity = THREE.MathUtils.lerp(backMat.opacity, 1.0, 0.25);
 
         // Dynamic 1-DOF Hinge pitch toward viewer (Zero roll, Zero yaw)
-        updateHingeAngle(camera, arStage, topEdgeHinge);
+        updateHingeAngle(camera, anchor.group, topEdgeHinge);
 
         if (arVideo.paused && !userManuallyPaused) {
           tryPlayAudioUnmuted();
           playPauseBtn.textContent = '⏸️';
         }
 
-        if (isOpticalTracking) {
-          hudDot.className = 'badge-dot';
-          hudStatusText.textContent = 'Card Locked • Playing';
-        } else {
-          hudDot.className = 'badge-dot lost';
-          hudStatusText.textContent = 'Card Anchored • Playing';
-        }
+        hudDot.className = 'badge-dot';
+        hudStatusText.textContent = 'Card Locked • Playing';
         scannerOverlay.style.display = 'none';
 
         // Animate atmospheric particles
@@ -832,16 +703,15 @@ async function startAR() {
           });
         }
       } else {
-        // Smooth Opacity Fade-Out
-        videoMat.opacity = THREE.MathUtils.lerp(videoMat.opacity, 0.0, 0.25);
-        backMat.opacity = THREE.MathUtils.lerp(backMat.opacity, 0.0, 0.25);
+        // Smooth clean fade-out (~300ms) - Never floats as a detached ghost in thin air
+        videoMat.opacity = THREE.MathUtils.lerp(videoMat.opacity, 0.0, 0.30);
+        backMat.opacity = THREE.MathUtils.lerp(backMat.opacity, 0.0, 0.30);
 
         if (matGold) matGold.opacity = 0;
         if (matRose) matRose.opacity = 0;
         if (matIvory) matIvory.opacity = 0;
 
-        if (videoMat.opacity < 0.03) {
-          arStage.visible = false;
+        if (videoMat.opacity < 0.04) {
           if (!arVideo.paused) {
             arVideo.pause();
             playPauseBtn.textContent = '▶️';
