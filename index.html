@@ -505,7 +505,8 @@ sampleTargetImg.onload = () => {
 
 // WebAR State
 let mindarThree = null;
-let anchor = null;
+let anchor0 = null;
+let anchor1 = null;
 let cardRoot = null;
 let cardPivotGroup = null;
 let cardMeshes = [];
@@ -529,9 +530,9 @@ function createContactShadowTexture() {
   const canvas = document.createElement('canvas');
   canvas.width = 256; canvas.height = 64;
   const ctx = canvas.getContext('2d');
-  const grad = ctx.createRadialGradient(128, 32, 4, 128, 32, 120);
-  grad.addColorStop(0, 'rgba(0,0,0,0.65)');
-  grad.addColorStop(0.5, 'rgba(0,0,0,0.25)');
+  const grad = ctx.createLinearGradient(0, 0, 0, 64);
+  grad.addColorStop(0, 'rgba(0,0,0,0.75)');
+  grad.addColorStop(0.35, 'rgba(0,0,0,0.3)');
   grad.addColorStop(1, 'rgba(0,0,0,0)');
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, 256, 64);
@@ -803,58 +804,52 @@ async function startWebAR() {
     key.position.set(-2, 5, 4);
     scene.add(key);
 
-    // Anchor on Physical Card Target (Index 0)
-    anchor = mindarThree.addAnchor(0);
+    // Dual-Target Tracking: Anchor 0 = Full Card, Anchor 1 = Top 65% Sub-target
+    anchor0 = mindarThree.addAnchor(0);
+    anchor1 = mindarThree.addAnchor(1);
 
     // ── RIGID BASE GROUNDING WITH INERTIAL POSE RETENTION ──
     cardRoot = new THREE.Group();
     cardRoot.visible = false;
     scene.add(cardRoot); // Decoupled to scene for smooth inertial hold during phone straightening
 
-    // Dimensions: MindAR normalizes target image width to 1.0
-    const targetW = 1.0;
-    const targetH = targetAspect; // Height is aspect ratio in MindAR units
+    // Target Dimensions & Top-Edge Coordinate Offsets
+    const targetAspect0 = (CONFIG && CONFIG.targetAspect) ? CONFIG.targetAspect : (1280 / 720);
+    const targetAspect1 = 832 / 720; // 1.155556 (Top 65% Sub-target)
+    const targetH0 = targetAspect0;
+    const targetH1 = targetAspect1;
+    const halfH0 = targetH0 / 2; // +0.888889 (Top edge of full card in Anchor 0 space)
+    const halfH1 = targetH1 / 2; // +0.577778 (Top edge of top 65% sub-target in Anchor 1 space)
+
     const visualCardWidth = 0.92;
-    const visualCardHeight = visualCardWidth * targetAspect;
+    const visualCardHeight = visualCardWidth * targetAspect0;
 
-    // ── PIVOT GROUP: Orientation & Spatial Grounding ──
-    cardPivotGroup = new THREE.Group();
-    const isCarousel = (CONFIG.layout === 'carousel');
-    const isCenter = (CONFIG.anchorPosition === 'center' || isCarousel);
+    // ── Gilded Crease Line along physical top edge (z = 0.002) ──
+    const creaseGeo = new THREE.PlaneGeometry(visualCardWidth * 1.02, 0.006);
+    const creaseMat = new THREE.MeshBasicMaterial({ color: currentTheme.edgeColor, side: THREE.DoubleSide });
+    const creaseMesh = new THREE.Mesh(creaseGeo, creaseMat);
+    creaseMesh.position.set(0, 0, 0.002);
+    cardRoot.add(creaseMesh);
 
-    if (isCenter) {
-      cardPivotGroup.position.set(0, 0, 0.025);
-      const initialTiltRad = (CONFIG.tiltAngle !== undefined ? CONFIG.tiltAngle : 45) * (Math.PI / 180);
-      cardPivotGroup.rotation.x = initialTiltRad;
-    } else if (CONFIG.anchorPosition === 'flush') {
-      cardPivotGroup.position.set(0, 0, 0.002);
-      cardPivotGroup.rotation.x = 0;
-    } else {
-      cardPivotGroup.position.set(0, targetH / 2, 0.004);
-      const tiltAngleRad = (CONFIG.tiltAngle !== undefined ? CONFIG.tiltAngle : 90) * (Math.PI / 180);
-      cardPivotGroup.rotation.x = tiltAngleRad;
-    }
-    cardRoot.add(cardPivotGroup);
-
-    // ── Subtle Contact Ground Shadow on Card Plane ──
-    const shadowGeo = isCenter
-      ? new THREE.PlaneGeometry(visualCardWidth * 1.5, visualCardHeight * 1.3)
-      : new THREE.PlaneGeometry(visualCardWidth * 1.3, 0.35);
+    // ── Directional Contact Ground Shadow (Lies flat on physical card below top edge) ──
+    const shadowGeo = new THREE.PlaneGeometry(visualCardWidth * 1.04, 0.22);
     const shadowMat = new THREE.MeshBasicMaterial({
       map: createContactShadowTexture(),
       transparent: true,
-      opacity: isCenter ? 0.35 : 0.65,
+      opacity: 0.55,
       depthWrite: false
     });
     const shadowMesh = new THREE.Mesh(shadowGeo, shadowMat);
-    if (!isCenter) {
-      shadowMesh.rotation.x = -Math.PI / 2;
-      shadowMesh.position.set(0, 0, 0.001);
-      cardPivotGroup.add(shadowMesh);
-    } else {
-      shadowMesh.position.set(0, 0, 0.001);
-      cardRoot.add(shadowMesh);
-    }
+    shadowMesh.position.set(0, -0.11, 0.001);
+    cardRoot.add(shadowMesh);
+
+    // ── PIVOT GROUP: Strictly Hinged at the Top Edge (y = 0 in cardRoot space) ──
+    cardPivotGroup = new THREE.Group();
+    cardPivotGroup.position.set(0, 0, 0.003);
+    cardPivotGroup.rotation.order = 'XYZ';
+    const initialTiltRad = (CONFIG.tiltAngle !== undefined ? CONFIG.tiltAngle : 75) * (Math.PI / 180);
+    cardPivotGroup.rotation.x = initialTiltRad;
+    cardRoot.add(cardPivotGroup);
 
     // ── 3. Content Presentation (Video AR or Multi-Card Deck) ──
     if (CONFIG.videoUrl) {
@@ -966,6 +961,7 @@ async function startWebAR() {
     cardPivotGroup.add(particlesGroup);
 
     // ── 5. Tracking State & Dead-Reckoning Hold Vectors ──
+    const _topEdgeMatrix = new THREE.Matrix4();
     const targetPos = new THREE.Vector3();
     const targetQuat = new THREE.Quaternion();
     const targetScale = new THREE.Vector3();
@@ -976,9 +972,31 @@ async function startWebAR() {
     let isPoseInitialized = false;
     let hasEverLocked = false;
     let lastTrackedTime = 0;
-    const HOLD_GRACE_PERIOD_MS = 1500; // 1.5s inertial hold when phone is straightened or distance deviates
+    const HOLD_GRACE_PERIOD_MS = 1800; // 1.8s inertial hold when phone is straightened or distance deviates
 
-    anchor.onTargetFound = () => {
+    // Gyroscope / IMU deviation tracker
+    let deviceOrientation = { alpha: 0, beta: 0, gamma: 0, initialized: false };
+    let lastLockedOrientation = { alpha: 0, beta: 0, gamma: 0, valid: false };
+
+    window.addEventListener('deviceorientation', (e) => {
+      if (e.alpha !== null && e.beta !== null && e.gamma !== null) {
+        deviceOrientation.alpha = e.alpha;
+        deviceOrientation.beta = e.beta;
+        deviceOrientation.gamma = e.gamma;
+        deviceOrientation.initialized = true;
+      }
+    }, { passive: true });
+
+    function getAngularDeviationFromLock() {
+      if (!deviceOrientation.initialized || !lastLockedOrientation.valid) return 0;
+      const dAlpha = Math.abs(deviceOrientation.alpha - lastLockedOrientation.alpha);
+      const diffAlpha = dAlpha > 180 ? 360 - dAlpha : dAlpha;
+      const diffBeta = Math.abs(deviceOrientation.beta - lastLockedOrientation.beta);
+      const diffGamma = Math.abs(deviceOrientation.gamma - lastLockedOrientation.gamma);
+      return Math.sqrt(diffAlpha * diffAlpha + diffBeta * diffBeta + diffGamma * diffGamma);
+    }
+
+    const onTargetFoundCommon = (targetIdx) => {
       isTargetFound = true;
       hasEverLocked = true;
       lastTrackedTime = performance.now();
@@ -986,7 +1004,7 @@ async function startWebAR() {
       scannerOverlay.style.display = 'none';
       lockedBadge.style.display = 'flex';
       const lt = document.getElementById('lockedText');
-      if (lt) lt.textContent = 'Card Locked · Active';
+      if (lt) lt.textContent = targetIdx === 0 ? 'Card Locked · Active' : 'Top Lock · Active';
       const bDot = lockedBadge.querySelector('.badge-dot');
       if (bDot) { bDot.style.background = '#00ff88'; bDot.style.boxShadow = '0 0 8px #00ff88'; }
 
@@ -1017,10 +1035,10 @@ async function startWebAR() {
       }
     };
 
-    anchor.onTargetLost = () => {
-      // MindAR optical frame lost. Render loop handles inertial hold gracefully.
-      isTargetFound = false;
-    };
+    anchor0.onTargetFound = () => onTargetFoundCommon(0);
+    anchor1.onTargetFound = () => onTargetFoundCommon(1);
+    anchor0.onTargetLost = () => {};
+    anchor1.onTargetLost = () => {};
 
     // Start MindAR Engine
     await mindarThree.start();
@@ -1040,82 +1058,118 @@ async function startWebAR() {
       setCard(0);
     }
 
-    // ── Render Loop with Inertial Pose Hold & Tilt Resilience ──
+    // ── Render Loop with Dual-Target Optical Fusion & Inertial Pose Hold ──
     renderer.setAnimationLoop(() => {
       try {
         const now = performance.now();
-        if (anchor && anchor.group) {
-          const m = anchor.group.matrixWorld.elements;
-          const isTrackingNow = anchor.group.visible && (m[0] !== 0 || m[5] !== 0 || m[10] !== 0);
 
-          if (isTrackingNow) {
-            lastTrackedTime = now;
-            hasEverLocked = true;
-            isTargetFound = true;
+        // Check Anchor 0 (Full Card Target)
+        const m0 = anchor0.group.matrixWorld.elements;
+        const is0Tracking = anchor0.group.visible && (m0[0] !== 0 || m0[5] !== 0 || m0[10] !== 0);
 
-            anchor.group.matrixWorld.decompose(targetPos, targetQuat, targetScale);
+        // Check Anchor 1 (Top 65% Sub-target)
+        const m1 = anchor1.group.matrixWorld.elements;
+        const is1Tracking = anchor1.group.visible && (m1[0] !== 0 || m1[5] !== 0 || m1[10] !== 0);
 
-            if (!isPoseInitialized) {
-              currentPos.copy(targetPos);
-              currentQuat.copy(targetQuat);
-              currentScale.copy(targetScale);
-              isPoseInitialized = true;
-            } else {
-              // Smooth lerp / slerp to eliminate hand tremors and perspective jumps
-              currentPos.lerp(targetPos, 0.45);
-              currentQuat.slerp(targetQuat, 0.45);
-              currentScale.lerp(targetScale, 0.45);
+        const isOpticalTracking = is0Tracking || is1Tracking;
+
+        if (isOpticalTracking) {
+          lastTrackedTime = now;
+          hasEverLocked = true;
+          isTargetFound = true;
+          if (deviceOrientation.initialized) {
+            lastLockedOrientation = { ...deviceOrientation, valid: true };
+          }
+
+          // Compute top edge world matrix:
+          // Anchor 0 top edge is at (0, halfH0, 0)
+          // Anchor 1 top edge is at (0, halfH1, 0)
+          if (is0Tracking) {
+            _topEdgeMatrix.makeTranslation(0, halfH0, 0);
+            _topEdgeMatrix.premultiply(anchor0.group.matrixWorld);
+          } else {
+            _topEdgeMatrix.makeTranslation(0, halfH1, 0);
+            _topEdgeMatrix.premultiply(anchor1.group.matrixWorld);
+          }
+
+          _topEdgeMatrix.decompose(targetPos, targetQuat, targetScale);
+
+          if (!isPoseInitialized) {
+            currentPos.copy(targetPos);
+            currentQuat.copy(targetQuat);
+            currentScale.copy(targetScale);
+            isPoseInitialized = true;
+          } else {
+            // Smooth lerp / slerp to eliminate hand tremors and perspective jumps
+            currentPos.lerp(targetPos, 0.45);
+            currentQuat.slerp(targetQuat, 0.45);
+            currentScale.lerp(targetScale, 0.45);
+          }
+
+          cardRoot.position.copy(currentPos);
+          cardRoot.quaternion.copy(currentQuat);
+          cardRoot.scale.copy(currentScale);
+          cardRoot.updateMatrixWorld(true);
+          lastValidMatrix.copy(cardRoot.matrixWorld);
+
+          cardRoot.visible = true;
+          scannerOverlay.style.display = 'none';
+          lockedBadge.style.display = 'flex';
+          const lt = document.getElementById('lockedText');
+          if (lt) lt.textContent = is0Tracking ? 'Card Locked · Active' : 'Top Lock · Active';
+          const bDot = lockedBadge.querySelector('.badge-dot');
+          if (bDot) { bDot.style.background = '#00ff88'; bDot.style.boxShadow = '0 0 8px #00ff88'; }
+
+          if (CONFIG.videoUrl && arVideo && arVideo.paused) {
+            arVideo.muted = false;
+            const p = arVideo.play();
+            if (p !== undefined) {
+              p.then(() => {
+                if (musicBtn) musicBtn.textContent = '🔊';
+              }).catch(() => {
+                arVideo.muted = true;
+                if (musicBtn) musicBtn.textContent = '🔇';
+                arVideo.play().catch(() => {});
+              });
             }
+          }
 
-            cardRoot.position.copy(currentPos);
-            cardRoot.quaternion.copy(currentQuat);
-            cardRoot.scale.copy(currentScale);
-            cardRoot.updateMatrixWorld(true);
-            lastValidMatrix.copy(cardRoot.matrixWorld);
+        } else if (hasEverLocked) {
+          // When optical tracking is lost during phone tilt/distance deviation:
+          const elapsed = now - lastTrackedTime;
+          const angularDev = getAngularDeviationFromLock();
 
+          if (angularDev > 25.0 || elapsed >= HOLD_GRACE_PERIOD_MS) {
+            // Cut off immediately if phone turned away (> 25 deg) or timeout
+            cardRoot.visible = false;
+            scannerOverlay.style.display = 'flex';
+            lockedBadge.style.display = 'none';
+            if (CONFIG.videoUrl && arVideo && !arVideo.paused) {
+              arVideo.pause();
+            }
+            if (cardMeshes && cardMeshes.length > 0) {
+              cardMeshes.forEach(cm => {
+                if (cm.userData && cm.userData.videoEl) {
+                  cm.userData.videoEl.pause();
+                }
+              });
+            }
+            pauseAudio();
+          } else {
+            // Inertial Hold: Keep 3D scene securely in place
             cardRoot.visible = true;
             scannerOverlay.style.display = 'none';
             lockedBadge.style.display = 'flex';
             const lt = document.getElementById('lockedText');
-            if (lt) lt.textContent = 'Card Locked · Active';
+            if (lt) lt.textContent = 'Card Anchored · Active';
             const bDot = lockedBadge.querySelector('.badge-dot');
-            if (bDot) { bDot.style.background = '#00ff88'; bDot.style.boxShadow = '0 0 8px #00ff88'; }
-
-          } else if (hasEverLocked) {
-            // When optical tracking is lost during phone tilt/distance deviation:
-            const elapsed = now - lastTrackedTime;
-            if (elapsed < HOLD_GRACE_PERIOD_MS) {
-              // Inertial Hold: Keep 3D scene securely in place
-              cardRoot.visible = true;
-              scannerOverlay.style.display = 'none';
-              lockedBadge.style.display = 'flex';
-              const lt = document.getElementById('lockedText');
-              if (lt) lt.textContent = 'Card Anchored · Active';
-              const bDot = lockedBadge.querySelector('.badge-dot');
-              if (bDot) { bDot.style.background = '#f59e0b'; bDot.style.boxShadow = '0 0 8px #f59e0b'; }
-            } else {
-              // Truly departed after grace period
-              cardRoot.visible = false;
-              scannerOverlay.style.display = 'flex';
-              lockedBadge.style.display = 'none';
-              if (CONFIG.videoUrl && arVideo && !arVideo.paused) {
-                arVideo.pause();
-              }
-              if (cardMeshes && cardMeshes.length > 0) {
-                cardMeshes.forEach(cm => {
-                  if (cm.userData && cm.userData.videoEl) {
-                    cm.userData.videoEl.pause();
-                  }
-                });
-              }
-              pauseAudio();
-            }
+            if (bDot) { bDot.style.background = '#f59e0b'; bDot.style.boxShadow = '0 0 8px #f59e0b'; }
           }
         }
 
         if (cardRoot.visible) {
+          updateViewingAngle();
           if (!CONFIG.videoUrl) {
-            updateViewingAngle();
             updateLayoutAnimation();
             updateStoryProgress();
           }
@@ -1151,9 +1205,19 @@ function updateViewingAngle() {
   _localCamPos.copy(_worldCamPos);
   cardRoot.worldToLocal(_localCamPos);
 
-  const angleToViewer = Math.atan2(-_localCamPos.y, _localCamPos.z);
-  const clampedTilt = Math.max(0.35, Math.min(1.48, angleToViewer));
+  // In cardRoot space, hinge is at y = 0, z = 0.003
+  const dy = _localCamPos.y;
+  const dz = _localCamPos.z - 0.003;
+  const angleToViewer = Math.atan2(-dy, dz);
+
+  // Clamp between 60° (1.05 rad) and 84° (1.46 rad) for optimal upright easel viewing
+  const clampedTilt = THREE.MathUtils.clamp(angleToViewer, 1.05, 1.46);
+
+  // Strict 1-DOF: only rotate on local X-axis, lock Y and Z to 0
+  cardPivotGroup.rotation.order = 'XYZ';
   cardPivotGroup.rotation.x += (clampedTilt - cardPivotGroup.rotation.x) * 0.12;
+  cardPivotGroup.rotation.y = 0; // Strict lock against yaw drift
+  cardPivotGroup.rotation.z = 0; // Strict lock against roll tilt/skew
 }
 
 // ----------------------------------------------------------------------------
