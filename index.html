@@ -813,9 +813,9 @@ async function startWebAR() {
       imageTargetSrc: './targets.mind',
       maxTrack: 2,
       filterMinCF: 0.001,
-      filterBeta: 0.2,
+      filterBeta: 1.0,
       warmupTolerance: 2,
-      missTolerance: 30,
+      missTolerance: 80,
       uiLoading: "no",
       uiScanning: "no"
     });
@@ -846,7 +846,7 @@ async function startWebAR() {
     const targetH1 = targetAspect1;
     const halfH0 = targetH0 / 2; // +0.888889 (Top edge of full card in Anchor 0 space)
     const halfH1 = targetH1 / 2; // +0.248611 (Top edge of top 28% sub-target in Anchor 1 space)
-    const HINGE_TUCK = 0.06;     // Tucks hinge 0.06 inward from physical card top edge — sits on gold border, eliminates floating gap
+    const HINGE_TUCK = 0.0;      // No tuck — hinge at exact detected top edge (= physical card's top gold border)
 
     const visualCardWidth = 0.92;
     const visualCardHeight = visualCardWidth * targetAspect0;
@@ -1003,7 +1003,7 @@ async function startWebAR() {
     let lastTrackedTime = 0;
     let continuousLockStartTime = 0;
     let frameCount = 0;
-    const HOLD_GRACE_PERIOD_MS = 1200; // 1.2s grace — enough to bridge anchor handoff without ghost playback on walls (gyro handles that)
+    const HOLD_GRACE_PERIOD_MS = 2500; // 2.5s grace — covers full angle transition (gyro azimuth cutoff handles wall pointing)
     let activeAnchorIdx = 0;
     let anchorLossCounter = 0;
 
@@ -1022,11 +1022,13 @@ async function startWebAR() {
 
     function getAngularDeviationFromLock() {
       if (!deviceOrientation.initialized || !lastLockedOrientation.valid) return 0;
+      // AZIMUTH ONLY: only measure horizontal pointing direction change (alpha).
+      // Deliberately IGNORE beta (phone tilt) and gamma — tilting the phone upward to 80-90°
+      // is intentional steep-angle viewing, not "pointing away". Only horizontal rotation
+      // (aiming at a wall/ceiling) should trigger the cutoff.
       const dAlpha = Math.abs(deviceOrientation.alpha - lastLockedOrientation.alpha);
       const diffAlpha = dAlpha > 180 ? 360 - dAlpha : dAlpha;
-      const diffBeta = Math.abs(deviceOrientation.beta - lastLockedOrientation.beta);
-      const diffGamma = Math.abs(deviceOrientation.gamma - lastLockedOrientation.gamma);
-      return Math.sqrt(diffAlpha * diffAlpha + diffBeta * diffBeta + diffGamma * diffGamma);
+      return diffAlpha;
     }
 
     const onTargetFoundCommon = (targetIdx) => {
@@ -1198,8 +1200,8 @@ async function startWebAR() {
           const elapsed = now - lastTrackedTime;
           const angularDev = getAngularDeviationFromLock();
 
-          if (angularDev > 20.0 || elapsed >= HOLD_GRACE_PERIOD_MS) {
-            // Cut off if phone turned significantly away (> 20 deg) or optical gap > 1.2s
+          if (angularDev > 35.0 || elapsed >= HOLD_GRACE_PERIOD_MS) {
+            // Cut off if phone rotated horizontally > 35° azimuth (pointing at wall/ceiling) or optical gap > 2.5s
             cardRoot.visible = false;
             scannerOverlay.style.display = 'flex';
             lockedBadge.style.display = 'none';
