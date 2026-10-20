@@ -532,6 +532,7 @@ sampleTargetImg.onload = () => {
 let mindarThree = null;
 let anchor0 = null;
 let anchor1 = null;
+let anchor2 = null;
 let cardRoot = null;
 let cardPivotGroup = null;
 let cardMeshes = [];
@@ -807,13 +808,15 @@ async function startWebAR() {
   arContainer.style.display = 'block';
 
   try {
-    // Responsive MindAR parameters: maxTrack: 2 (enables simultaneous tracking of full card + top 65% sub-target for seamless vertical handoff)
+    // 3-Tier Multi-Target Tracking: maxTrack: 3
+    // Tracks Full Card (0), Mid 60% Card (1), and Top 32% Header (2) simultaneously
+    // filterMinCF: 0.001 & filterBeta: 0.08 heavily damp jitter and micro-tremors
     mindarThree = new MindARThree({
       container: arContainer,
       imageTargetSrc: './targets.mind',
-      maxTrack: 2,
+      maxTrack: 3,
       filterMinCF: 0.001,
-      filterBeta: 1.0,
+      filterBeta: 0.08,
       warmupTolerance: 1,
       missTolerance: 35,
       uiLoading: "no",
@@ -830,9 +833,13 @@ async function startWebAR() {
     key.position.set(-2, 5, 4);
     scene.add(key);
 
-    // Dual-Target Tracking: Anchor 0 = Full Card, Anchor 1 = Top 65% Sub-target
+    // 3-Tier Multi-Target Anchors:
+    // Anchor 0 = Full Card (720x1280)
+    // Anchor 1 = Top 60% Card (720x768)
+    // Anchor 2 = Top 32% Header (720x410) - Locks persistently even when only top 30% of card is in view!
     anchor0 = mindarThree.addAnchor(0);
     anchor1 = mindarThree.addAnchor(1);
+    anchor2 = mindarThree.addAnchor(2);
 
     // ── RIGID BASE GROUNDING WITH INERTIAL POSE RETENTION ──
     cardRoot = new THREE.Group();
@@ -841,11 +848,14 @@ async function startWebAR() {
 
     // Target Dimensions & Top-Edge Coordinate Offsets
     const targetAspect0 = (CONFIG && CONFIG.targetAspect) ? CONFIG.targetAspect : (1280 / 720);
-    const targetAspect1 = 832 / 720; // 1.155556 (Top 65% Sub-target)
+    const targetAspect1 = 768 / 720; // 1.066667 (Top 60% Sub-target)
+    const targetAspect2 = 410 / 720; // 0.569444 (Top 32% Header Sub-target)
     const targetH0 = targetAspect0;
     const targetH1 = targetAspect1;
+    const targetH2 = targetAspect2;
     const halfH0 = targetH0 / 2; // +0.888889 (Top edge of full card in Anchor 0 space)
-    const halfH1 = targetH1 / 2; // +0.577778 (Top edge of top 65% sub-target in Anchor 1 space)
+    const halfH1 = targetH1 / 2; // +0.533333 (Top edge of top 60% sub-target in Anchor 1 space)
+    const halfH2 = targetH2 / 2; // +0.284722 (Top edge of top 32% header in Anchor 2 space)
     const HINGE_TUCK = 0.04;     // Tucks hinge 0.04 down onto physical card's top gold border (eliminating floating gap)
 
     const visualCardWidth = 0.92;
@@ -1003,7 +1013,7 @@ async function startWebAR() {
     let lastTrackedTime = 0;
     let continuousLockStartTime = 0;
     let frameCount = 0;
-    const HOLD_GRACE_PERIOD_MS = 1800; // 1.8s inertial hold when phone is straightened or distance deviates
+    const HOLD_GRACE_PERIOD_MS = 2500; // 2.5s inertial hold when phone is straightened or distance deviates
 
     // Gyroscope / IMU deviation tracker
     let deviceOrientation = { alpha: 0, beta: 0, gamma: 0, initialized: false };
@@ -1068,8 +1078,10 @@ async function startWebAR() {
 
     anchor0.onTargetFound = () => onTargetFoundCommon(0);
     anchor1.onTargetFound = () => onTargetFoundCommon(1);
+    anchor2.onTargetFound = () => onTargetFoundCommon(2);
     anchor0.onTargetLost = () => {};
     anchor1.onTargetLost = () => {};
+    anchor2.onTargetLost = () => {};
 
     // Start MindAR Engine
     await mindarThree.start();
@@ -1089,20 +1101,24 @@ async function startWebAR() {
       setCard(0);
     }
 
-    // ── Render Loop with Dual-Target Optical Fusion & Inertial Pose Hold ──
+    // ── Render Loop with 3-Tier Multi-Target Optical Fusion & Inertial World Hold ──
     renderer.setAnimationLoop(() => {
       try {
         const now = performance.now();
 
-        // Check Anchor 0 (Full Card Target)
+        // Check Anchor 0 (Full Card Target: 100%)
         const m0 = anchor0.group.matrixWorld.elements;
         const is0Tracking = anchor0.group.visible && (m0[0] !== 0 || m0[5] !== 0 || m0[10] !== 0);
 
-        // Check Anchor 1 (Top 65% Sub-target)
+        // Check Anchor 1 (Top 60% Sub-target)
         const m1 = anchor1.group.matrixWorld.elements;
         const is1Tracking = anchor1.group.visible && (m1[0] !== 0 || m1[5] !== 0 || m1[10] !== 0);
 
-        const isOpticalTracking = is0Tracking || is1Tracking;
+        // Check Anchor 2 (Top 32% Header Sub-target - keeps active lock even with only top 30% visible!)
+        const m2 = anchor2.group.matrixWorld.elements;
+        const is2Tracking = anchor2.group.visible && (m2[0] !== 0 || m2[5] !== 0 || m2[10] !== 0);
+
+        const isOpticalTracking = is0Tracking || is1Tracking || is2Tracking;
 
         if (isOpticalTracking) {
           if (continuousLockStartTime === 0) continuousLockStartTime = now;
@@ -1114,14 +1130,16 @@ async function startWebAR() {
           }
 
           // Compute top edge world matrix (tucked onto physical card margin):
-          // Anchor 0 top edge is at (0, halfH0 - HINGE_TUCK, 0)
-          // Anchor 1 top edge is at (0, halfH1 - HINGE_TUCK, 0)
+          // All 3 targets share the identical top physical card boundary:
           if (is0Tracking) {
             _topEdgeMatrix.makeTranslation(0, halfH0 - HINGE_TUCK, 0);
             _topEdgeMatrix.premultiply(anchor0.group.matrixWorld);
-          } else {
+          } else if (is1Tracking) {
             _topEdgeMatrix.makeTranslation(0, halfH1 - HINGE_TUCK, 0);
             _topEdgeMatrix.premultiply(anchor1.group.matrixWorld);
+          } else {
+            _topEdgeMatrix.makeTranslation(0, halfH2 - HINGE_TUCK, 0);
+            _topEdgeMatrix.premultiply(anchor2.group.matrixWorld);
           }
 
           _topEdgeMatrix.decompose(targetPos, targetQuat, targetScale);
@@ -1132,17 +1150,17 @@ async function startWebAR() {
             currentScale.copy(targetScale);
             isPoseInitialized = true;
           } else {
-            // Dual-speed adaptive smoothing with deadband for rock-solid stability:
-            // Under micro-disturbances (<15mm / <3°), damp heavily (0.08) to lock pose like stone.
-            // On deliberate phone movement, track smoothly (0.22) with zero lag.
+            // Anti-Jitter Deadband & Dual-Speed Adaptive Damping:
+            // Under micro-disturbances (<12mm / <2.5°), damp heavily (0.05) to lock pose like stone.
+            // On deliberate phone movements, smoothly follow (0.20) with zero lag.
             const dist = currentPos.distanceTo(targetPos);
             const angleDiff = currentQuat.angleTo(targetQuat);
-            const posFactor = dist < 0.015 ? 0.08 : 0.22;
-            const rotFactor = angleDiff < 0.05 ? 0.08 : 0.22;
+            const posFactor = dist < 0.012 ? 0.05 : 0.20;
+            const rotFactor = angleDiff < 0.045 ? 0.05 : 0.20;
 
             currentPos.lerp(targetPos, posFactor);
             currentQuat.slerp(targetQuat, rotFactor);
-            currentScale.lerp(targetScale, 0.12);
+            currentScale.lerp(targetScale, 0.10);
           }
 
           cardRoot.position.copy(currentPos);
@@ -1155,7 +1173,11 @@ async function startWebAR() {
           scannerOverlay.style.display = 'none';
           lockedBadge.style.display = 'flex';
           const lt = document.getElementById('lockedText');
-          if (lt) lt.textContent = is0Tracking ? 'Card Locked · Active' : 'Top Lock · Active';
+          if (lt) {
+            if (is0Tracking) lt.textContent = 'Card Locked · Active';
+            else if (is1Tracking) lt.textContent = 'Top Lock · Active';
+            else lt.textContent = 'Header Lock · Active';
+          }
           const bDot = lockedBadge.querySelector('.badge-dot');
           if (bDot) { bDot.style.background = '#00ff88'; bDot.style.boxShadow = '0 0 8px #00ff88'; }
 
@@ -1263,10 +1285,10 @@ function updateViewingAngle() {
   // Clamp between 60° (1.05 rad) and 84° (1.46 rad) for optimal upright easel viewing
   const clampedTilt = THREE.MathUtils.clamp(angleToViewer, 1.05, 1.46);
 
-  // Strict 1-DOF with ~3° deadband: prevents video wobbling/nodding from hand micro-tremors
+  // Strict 1-DOF with ~3° deadband: prevents video wobbling/nodding from hand micro-disturbances
   const tiltDiff = Math.abs(clampedTilt - cardPivotGroup.rotation.x);
-  if (tiltDiff > 0.05) { // ~3° deadband
-    cardPivotGroup.rotation.x += (clampedTilt - cardPivotGroup.rotation.x) * 0.05;
+  if (tiltDiff > 0.05) { // ~3° deadband: ignore minor hand oscillations
+    cardPivotGroup.rotation.x += (clampedTilt - cardPivotGroup.rotation.x) * 0.04;
   }
   cardPivotGroup.rotation.order = 'XYZ';
   cardPivotGroup.rotation.y = 0; // Strict lock against yaw drift
