@@ -214,7 +214,7 @@
   "silhouette": "rect",
   "depth": "gold-foil",
   "anchorPosition": "back-edge",
-  "tiltAngle": 75,
+  "tiltAngle": 60,
   "trackingMode": "grounded",
   "adaptiveTilt": true,
   "directScan": true,
@@ -834,11 +834,6 @@ async function startWebAR() {
     anchor0 = mindarThree.addAnchor(0);
     anchor1 = mindarThree.addAnchor(1);
 
-    // ── RIGID BASE GROUNDING WITH INERTIAL POSE RETENTION ──
-    cardRoot = new THREE.Group();
-    cardRoot.visible = false;
-    scene.add(cardRoot); // Decoupled to scene for smooth inertial hold during phone straightening
-
     // Target Dimensions & Top-Edge Coordinate Offsets
     const targetAspect0 = (CONFIG && CONFIG.targetAspect) ? CONFIG.targetAspect : (1280 / 720);
     const targetAspect1 = 358 / 720; // 0.497222 (Top 28% Sub-target: Ornate Arch + Aaryav & Vihana)
@@ -846,10 +841,16 @@ async function startWebAR() {
     const targetH1 = targetAspect1;
     const halfH0 = targetH0 / 2; // +0.888889 (Top edge of full card in Anchor 0 space)
     const halfH1 = targetH1 / 2; // +0.248611 (Top edge of top 28% sub-target in Anchor 1 space)
-    const HINGE_TUCK = 0.0;      // No tuck — hinge at exact detected top edge (= physical card's top gold border)
+    const HINGE_TUCK = 0.0;      // Hinge at exact detected top edge (= physical card's top gold border)
 
     const visualCardWidth = 0.92;
     const visualCardHeight = visualCardWidth * targetAspect0;
+
+    // ── RIGID PHYSICAL ANCHORING: cardRoot parented directly to anchor ──
+    cardRoot = new THREE.Group();
+    cardRoot.visible = false;
+    cardRoot.position.set(0, halfH0 - HINGE_TUCK, 0);
+    anchor0.group.add(cardRoot); // Direct physical attachment to card anchor (zero floating risk)
 
     // ── Gilded Extension Fold Seam along physical card edge (exactly on cardstock surface, z = 0.0) ──
     const creaseGeo = new THREE.PlaneGeometry(visualCardWidth * 1.01, 0.012);
@@ -874,7 +875,7 @@ async function startWebAR() {
     cardPivotGroup = new THREE.Group();
     cardPivotGroup.position.set(0, 0, 0.0);
     cardPivotGroup.rotation.order = 'XYZ';
-    const initialTiltRad = (CONFIG.tiltAngle !== undefined ? CONFIG.tiltAngle : 75) * (Math.PI / 180);
+    const initialTiltRad = (CONFIG.tiltAngle !== undefined ? CONFIG.tiltAngle : 60) * (Math.PI / 180);
     cardPivotGroup.rotation.x = initialTiltRad;
     cardRoot.add(cardPivotGroup);
 
@@ -906,6 +907,7 @@ async function startWebAR() {
       cardPivotGroup.add(backMesh);
     } else {
       // ── B. Multi-Card Deck (Carousel / Triptych / Diorama) ──
+      const isCenter = (CONFIG.anchorPosition === 'center' || CONFIG.layout === 'carousel');
       const cardDepth = (CONFIG.depth === 'flat') ? 0.0001 : 0.008;
       const cardGeo = new THREE.BoxGeometry(visualCardWidth, visualCardHeight, cardDepth);
       if (!isCenter) {
@@ -989,27 +991,26 @@ async function startWebAR() {
       cardPivotGroup.add(particlesGroup);
     }
 
-    // ── 5. Tracking State & Dead-Reckoning Hold Vectors ──
-    const _topEdgeMatrix = new THREE.Matrix4();
-    const targetPos = new THREE.Vector3();
-    const targetQuat = new THREE.Quaternion();
-    const targetScale = new THREE.Vector3();
-    const currentPos = new THREE.Vector3();
-    const currentQuat = new THREE.Quaternion();
-    const currentScale = new THREE.Vector3();
-    const lastValidMatrix = new THREE.Matrix4();
-    let isPoseInitialized = false;
+    // ── 5. Tracking State & Gyroscope-Compensated Anchor Vectors ──
+    const lastOpticalWorldPos = new THREE.Vector3();
+    const lastOpticalWorldQuat = new THREE.Quaternion();
+    const _compensatedPos = new THREE.Vector3();
+    const _compensatedQuat = new THREE.Quaternion();
+    const _tempV = new THREE.Vector3();
+    const _tempQ = new THREE.Quaternion();
+    let lastOpticalBeta = 0;
+    let lastOpticalAlpha = 0;
+    let lastOpticalGamma = 0;
+    let gyroCompensationStartTime = 0;
+    let horizontalOffCounter = 0;
+    let activeAnchorIdx = 0;
     let hasEverLocked = false;
     let lastTrackedTime = 0;
     let continuousLockStartTime = 0;
     let frameCount = 0;
-    const HOLD_GRACE_PERIOD_MS = 2500; // 2.5s grace — covers full angle transition (gyro azimuth cutoff handles wall pointing)
-    let activeAnchorIdx = 0;
-    let anchorLossCounter = 0;
 
     // Gyroscope / IMU deviation tracker
     let deviceOrientation = { alpha: 0, beta: 0, gamma: 0, initialized: false };
-    let lastLockedOrientation = { alpha: 0, beta: 0, gamma: 0, valid: false };
 
     window.addEventListener('deviceorientation', (e) => {
       if (e.alpha !== null && e.beta !== null && e.gamma !== null) {
@@ -1019,17 +1020,6 @@ async function startWebAR() {
         deviceOrientation.initialized = true;
       }
     }, { passive: true });
-
-    function getAngularDeviationFromLock() {
-      if (!deviceOrientation.initialized || !lastLockedOrientation.valid) return 0;
-      // AZIMUTH ONLY: only measure horizontal pointing direction change (alpha).
-      // Deliberately IGNORE beta (phone tilt) and gamma — tilting the phone upward to 80-90°
-      // is intentional steep-angle viewing, not "pointing away". Only horizontal rotation
-      // (aiming at a wall/ceiling) should trigger the cutoff.
-      const dAlpha = Math.abs(deviceOrientation.alpha - lastLockedOrientation.alpha);
-      const diffAlpha = dAlpha > 180 ? 360 - dAlpha : dAlpha;
-      return diffAlpha;
-    }
 
     const onTargetFoundCommon = (targetIdx) => {
       isTargetFound = true;
@@ -1113,58 +1103,37 @@ async function startWebAR() {
           lastTrackedTime = now;
           hasEverLocked = true;
           isTargetFound = true;
-          if (deviceOrientation.initialized) {
-            lastLockedOrientation = { ...deviceOrientation, valid: true };
-          }
+          gyroCompensationStartTime = 0;
+          horizontalOffCounter = 0;
 
-          // Anchor Selection — immediate switch, no latch delay (latch caused handoff race with timeout):
-          // When both anchors tracking, prefer Anchor0 (widest baseline). Otherwise use whichever is live.
+          // Anchor Selection: Favor Anchor 0 when tracking, else Anchor 1
           if (is0Tracking) {
             activeAnchorIdx = 0;
-            anchorLossCounter = 0;
           } else if (is1Tracking) {
             activeAnchorIdx = 1;
-            anchorLossCounter = 0;
           }
 
-          // Compute top edge world matrix (tucked onto physical card margin):
-          // Anchor 0 top edge is at (0, halfH0 - HINGE_TUCK, 0)
-          // Anchor 1 top edge is at (0, halfH1 - HINGE_TUCK, 0)
-          if (activeAnchorIdx === 0) {
-            _topEdgeMatrix.makeTranslation(0, halfH0 - HINGE_TUCK, 0);
-            _topEdgeMatrix.premultiply(anchor0.group.matrixWorld);
-          } else {
-            _topEdgeMatrix.makeTranslation(0, halfH1 - HINGE_TUCK, 0);
-            _topEdgeMatrix.premultiply(anchor1.group.matrixWorld);
+          const targetAnchor = activeAnchorIdx === 0 ? anchor0 : anchor1;
+          const targetHalfH = activeAnchorIdx === 0 ? halfH0 : halfH1;
+
+          // DIRECT PHYSICAL PARENTING: When optical is live, cardRoot MUST be a child of the anchor
+          if (cardRoot.parent !== targetAnchor.group) {
+            targetAnchor.group.add(cardRoot);
           }
-
-          _topEdgeMatrix.decompose(targetPos, targetQuat, targetScale);
-
-          if (!isPoseInitialized) {
-            currentPos.copy(targetPos);
-            currentQuat.copy(targetQuat);
-            currentScale.copy(targetScale);
-            isPoseInitialized = true;
-          } else {
-            // Velocity-Aware Adaptive Jitter-Gate (Deadband)
-            const dPos = currentPos.distanceTo(targetPos);
-            const dQuat = currentQuat.angleTo(targetQuat);
-
-            // If micro-motion is under tremor threshold (< 5mm, < 0.8°): FREEZE pose completely (0 Jitter)
-            if (dPos > 0.005 || dQuat > 0.014) {
-              // Deliberate movement: dynamic alpha scales with speed (< 1 frame latency, zero sluggish lag)
-              const alpha = Math.min(0.35, 0.08 + dPos * 2.0);
-              currentPos.lerp(targetPos, alpha);
-              currentQuat.slerp(targetQuat, alpha);
-              currentScale.lerp(targetScale, alpha);
-            }
-          }
-
-          cardRoot.position.copy(currentPos);
-          cardRoot.quaternion.copy(currentQuat);
-          cardRoot.scale.copy(currentScale);
+          // In anchor local space, hinge is pinned strictly to the top edge (halfH - HINGE_TUCK)
+          cardRoot.position.set(0, targetHalfH - HINGE_TUCK, 0);
+          cardRoot.quaternion.identity();
+          cardRoot.scale.set(1, 1, 1);
           cardRoot.updateMatrixWorld(true);
-          lastValidMatrix.copy(cardRoot.matrixWorld);
+
+          // Continuously update reference vectors for the LAST confirmed optical frame
+          cardRoot.getWorldPosition(lastOpticalWorldPos);
+          cardRoot.getWorldQuaternion(lastOpticalWorldQuat);
+          if (deviceOrientation.initialized) {
+            lastOpticalBeta = deviceOrientation.beta;
+            lastOpticalAlpha = deviceOrientation.alpha;
+            lastOpticalGamma = deviceOrientation.gamma;
+          }
 
           cardRoot.visible = true;
           scannerOverlay.style.display = 'none';
@@ -1197,11 +1166,31 @@ async function startWebAR() {
 
         } else if (hasEverLocked) {
           continuousLockStartTime = 0; // Reset continuous lock timer on optical dropout
-          const elapsed = now - lastTrackedTime;
-          const angularDev = getAngularDeviationFromLock();
+          if (gyroCompensationStartTime === 0) {
+            gyroCompensationStartTime = now;
+            // Reparent to scene at exact current world matrix so it doesn't jump
+            scene.attach(cardRoot);
+          }
 
-          if (angularDev > 35.0 || elapsed >= HOLD_GRACE_PERIOD_MS) {
-            // Cut off if phone rotated horizontally > 35° azimuth (pointing at wall/ceiling) or optical gap > 2.5s
+          const elapsedSinceOptical = now - lastTrackedTime;
+
+          // Horizontal Compass / Azimuth Check (relative to last confirmed optical frame)
+          let diffAlpha = 0;
+          if (deviceOrientation.initialized) {
+            const dAlpha = Math.abs(deviceOrientation.alpha - lastOpticalAlpha);
+            diffAlpha = dAlpha > 180 ? 360 - dAlpha : dAlpha;
+          }
+
+          if (diffAlpha > 30.0) {
+            horizontalOffCounter++;
+          } else {
+            horizontalOffCounter = 0;
+          }
+
+          // Cutoff Conditions:
+          // 1. Turned away horizontally (> 30 deg sustained for 5+ consecutive frames)
+          // 2. Optical tracking lost for more than 7.0 seconds
+          if (horizontalOffCounter > 5 || elapsedSinceOptical >= 7000) {
             cardRoot.visible = false;
             scannerOverlay.style.display = 'flex';
             lockedBadge.style.display = 'none';
@@ -1210,22 +1199,44 @@ async function startWebAR() {
             }
             if (cardMeshes && cardMeshes.length > 0) {
               cardMeshes.forEach(cm => {
-                if (cm.userData && cm.userData.videoEl) {
-                  cm.userData.videoEl.pause();
-                }
+                if (cm.userData && cm.userData.videoEl) cm.userData.videoEl.pause();
               });
             }
             pauseAudio();
           } else {
-            // Micro-bridge (under 350ms): hold pose briefly to smooth over camera focus ticks
+            // Gyroscope Vertical Compensation Mode:
             cardRoot.visible = true;
             scannerOverlay.style.display = 'none';
             lockedBadge.style.display = 'flex';
             lockedBadge.style.opacity = '1';
             const lt = document.getElementById('lockedText');
-            if (lt) lt.textContent = 'Card Anchored · Active';
+            if (lt) lt.textContent = 'Card Anchored · Gyro Active';
             const bDot = lockedBadge.querySelector('.badge-dot');
-            if (bDot) { bDot.style.background = '#f59e0b'; bDot.style.boxShadow = '0 0 8px #f59e0b'; }
+            if (bDot) { bDot.style.background = '#00e5ff'; bDot.style.boxShadow = '0 0 8px #00e5ff'; }
+
+            if (deviceOrientation.initialized) {
+              // Delta since last optically tracked frame
+              const dBeta = deviceOrientation.beta - lastOpticalBeta;
+
+              // Gimbal-lock dampening near 80°-90°:
+              let stabilityFactor = 1.0;
+              if (Math.abs(deviceOrientation.beta) > 75) {
+                stabilityFactor = Math.max(0.1, 1.0 - (Math.abs(deviceOrientation.beta) - 75) / 20.0);
+              }
+              const compRad = (dBeta * (Math.PI / 180)) * stabilityFactor;
+
+              // Card local horizontal right-axis in camera space
+              const cardRightAxis = _tempV.set(1, 0, 0).applyQuaternion(lastOpticalWorldQuat).normalize();
+
+              // Rotate position around camera origin (0,0,0) by -compRad on cardRightAxis
+              const qComp = _tempQ.setFromAxisAngle(cardRightAxis, -compRad);
+              _compensatedPos.copy(lastOpticalWorldPos).applyQuaternion(qComp);
+              _compensatedQuat.copy(lastOpticalWorldQuat).premultiply(qComp);
+
+              cardRoot.position.copy(_compensatedPos);
+              cardRoot.quaternion.copy(_compensatedQuat);
+              cardRoot.updateMatrixWorld(true);
+            }
           }
         }
 
@@ -1275,8 +1286,8 @@ function updateViewingAngle() {
   const dz = _localCamPos.z - 0.0;
   const angleToViewer = Math.atan2(-dy, dz);
 
-  // Clamp between 60° (1.05 rad) and 84° (1.46 rad) for optimal upright easel viewing
-  const clampedTilt = THREE.MathUtils.clamp(angleToViewer, 1.05, 1.46);
+  // Clamp between 50° (0.87 rad) and 70° (1.22 rad) for natural greeting card pop-up easel viewing
+  const clampedTilt = THREE.MathUtils.clamp(angleToViewer, 0.87, 1.22);
 
   // Strict 1-DOF: only rotate on local X-axis, lock Y and Z to 0
   cardPivotGroup.rotation.order = 'XYZ';
