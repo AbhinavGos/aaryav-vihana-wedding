@@ -1001,6 +1001,7 @@ async function startWebAR() {
     let lastOpticalBeta = 0;
     let lastOpticalAlpha = 0;
     let lastOpticalGamma = 0;
+    let stableReferenceAlpha = null;
     let gyroCompensationStartTime = 0;
     let horizontalOffCounter = 0;
     let activeAnchorIdx = 0;
@@ -1008,6 +1009,7 @@ async function startWebAR() {
     let lastTrackedTime = 0;
     let continuousLockStartTime = 0;
     let frameCount = 0;
+    const HOLD_GRACE_PERIOD_MS = 2000; // 2.0s optical dropout grace period (user-configured)
 
     // Gyroscope / IMU deviation tracker
     let deviceOrientation = { alpha: 0, beta: 0, gamma: 0, initialized: false };
@@ -1025,6 +1027,7 @@ async function startWebAR() {
       isTargetFound = true;
       hasEverLocked = true;
       lastTrackedTime = performance.now();
+      stableReferenceAlpha = null;
       cardRoot.visible = true;
       scannerOverlay.style.display = 'none';
       lockedBadge.style.display = 'flex';
@@ -1133,6 +1136,15 @@ async function startWebAR() {
             lastOpticalBeta = deviceOrientation.beta;
             lastOpticalAlpha = deviceOrientation.alpha;
             lastOpticalGamma = deviceOrientation.gamma;
+
+            // Stable Reference Heading:
+            // Update baseline when card is well-framed horizontally (|x/z| < 0.22, approx within ±12.5° of optical center).
+            // When user pans away, the card drifts to corner/edge, freezing stableReferenceAlpha
+            // so we don't chase the phone's heading into empty space!
+            const horizRatio = Math.abs(lastOpticalWorldPos.x / (lastOpticalWorldPos.z !== 0 ? lastOpticalWorldPos.z : -1));
+            if (stableReferenceAlpha === null || horizRatio < 0.22) {
+              stableReferenceAlpha = deviceOrientation.alpha;
+            }
           }
 
           cardRoot.visible = true;
@@ -1174,26 +1186,36 @@ async function startWebAR() {
 
           const elapsedSinceOptical = now - lastTrackedTime;
 
-          // Horizontal Compass / Azimuth Check (relative to last confirmed optical frame)
+          // Horizontal Azimuth Deviation Check relative to locked reference baseline
           let diffAlpha = 0;
-          if (deviceOrientation.initialized) {
-            const dAlpha = Math.abs(deviceOrientation.alpha - lastOpticalAlpha);
+          if (deviceOrientation.initialized && stableReferenceAlpha !== null) {
+            const dAlpha = Math.abs(deviceOrientation.alpha - stableReferenceAlpha);
             diffAlpha = dAlpha > 180 ? 360 - dAlpha : dAlpha;
           }
 
-          if (diffAlpha > 30.0) {
+          // Check if card was exiting through the left/right screen periphery when optical dropped
+          const exitHorizRatio = Math.abs(lastOpticalWorldPos.x / (lastOpticalWorldPos.z !== 0 ? lastOpticalWorldPos.z : -1));
+          const exitedHorizontally = exitHorizRatio > 0.28;
+
+          // Horizontal Pan Cutoff condition:
+          // Either phone heading deviated > 20° from centered baseline,
+          // OR card was exiting screen edge with > 12° pan deviation
+          const isPanCutoff = diffAlpha > 20.0 || (exitedHorizontally && diffAlpha > 12.0);
+
+          if (isPanCutoff) {
             horizontalOffCounter++;
           } else {
             horizontalOffCounter = 0;
           }
 
           // Cutoff Conditions:
-          // 1. Turned away horizontally (> 30 deg sustained for 5+ consecutive frames)
-          // 2. Optical tracking lost for more than 7.0 seconds
-          if (horizontalOffCounter > 5 || elapsedSinceOptical >= 7000) {
+          // 1. Turned away horizontally (sustained for 2+ consecutive frames, ~33ms: instant stop once out of sight)
+          // 2. Optical tracking lost for more than HOLD_GRACE_PERIOD_MS (2.0s)
+          if (horizontalOffCounter >= 2 || elapsedSinceOptical >= HOLD_GRACE_PERIOD_MS) {
             cardRoot.visible = false;
             scannerOverlay.style.display = 'flex';
             lockedBadge.style.display = 'none';
+            stableReferenceAlpha = null; // Reset baseline for next lock
             if (CONFIG.videoUrl && arVideo && !arVideo.paused) {
               arVideo.pause();
             }
